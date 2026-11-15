@@ -26,6 +26,9 @@ import psycopg
 # ============================================================================
 
 TZ = ZoneInfo(os.getenv("TZ", "Europe/Madrid"))
+# The reporter and portal share the backup volume.  Keeping the report below
+# this directory makes the public route deterministic and avoids mixing report
+# assets with database backups.
 OUT = Path("/reports/healthhub/reports/semanal")
 OUT.mkdir(parents=True, exist_ok=True)
 DSN = os.environ["DATABASE_URL"]
@@ -164,7 +167,7 @@ def plot_agp(values, output_path):
         return False
 
 def plot_daily_profiles(values, events, output_dir):
-    """Generar gráficos de perfiles diarios (últimos 7 días)."""
+    """Generar gráficos de perfiles diarios (últimos 14 días)."""
     if not values:
         return []
     
@@ -185,8 +188,8 @@ def plot_daily_profiles(values, events, output_dir):
         events_by_day[day].append((event_type, when, payload))
     
     saved = []
-    # Últimos 7 días
-    for day in sorted(by_day.keys(), reverse=True)[:7]:
+    # Newest first, for the whole reporting period.
+    for day in sorted(by_day.keys(), reverse=True)[:14]:
         try:
             fig, ax = plt.subplots(figsize=(12, 4), dpi=100)
             
