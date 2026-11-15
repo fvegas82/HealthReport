@@ -122,6 +122,35 @@ def _latest_renpho_image():
     return images[0] if images else None
 
 
+def normalize_renpho_reading(reading):
+    """Compatibilidad con el JSON generado por el OCR original del Mac mini."""
+    normalized = dict(reading)
+    aliases = {
+        "weight": ("weight_kg",),
+        "fat_percentage": ("body_fat_pct", "fat_pct"),
+        "fat_mass": ("body_fat_mass_kg", "fat_mass_kg"),
+        "visceral_fat": ("visceral_fat_index",),
+        "muscle_percentage": ("muscle_pct",),
+        "muscle_mass": ("muscle_mass_kg",),
+        "water_percentage": ("body_water_pct", "water_pct"),
+        "water_mass": ("body_water_mass_kg", "water_mass_kg"),
+        "protein_percentage": ("protein_pct",),
+        "protein_mass": ("protein_mass_kg",),
+        "bone_mass": ("bone_mass_kg",),
+        "fat_free_mass": ("fat_free_mass_kg",),
+        "bmr": ("bmr_kcal",),
+        "metabolic_age": ("metabolic_age_years",),
+        "captured_at": ("measured_at", "measurement_at", "created_at"),
+    }
+    for canonical, legacy_keys in aliases.items():
+        if normalized.get(canonical) is None:
+            for legacy_key in legacy_keys:
+                if reading.get(legacy_key) is not None:
+                    normalized[canonical] = reading[legacy_key]
+                    break
+    return normalized
+
+
 def renpho_composition():
     """Leer la última composición estructurada generada por el OCR local.
 
@@ -132,7 +161,7 @@ def renpho_composition():
         renpho_file = RENPHO_AUDIT_DIR / "ultimo.json"
         if renpho_file.exists():
             with open(renpho_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+                return normalize_renpho_reading(json.load(f))
     except Exception as e:
         log.warning(f"No se pudo leer RENPHO: {e}")
 
