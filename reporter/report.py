@@ -29,7 +29,7 @@ TZ = ZoneInfo(os.getenv("TZ", "Europe/Madrid"))
 OUT = Path("/reports")
 OUT.mkdir(exist_ok=True)
 DSN = os.environ["DATABASE_URL"]
-NIGHT = os.environ["NIGHTSCOUT_URL"].rstrip("/")
+NIGHT = os.getenv("NIGHTSCOUT_URL", "http://nightscout:1337").rstrip("/")
 
 # Logging
 logging.basicConfig(
