@@ -102,6 +102,7 @@ services:
       - nightscout_reports:/glucose-reports:ro
     networks:
       - healthhub_private
+      - cloudflare_tunnel
 
 volumes:
   healthhub_postgres_data:
