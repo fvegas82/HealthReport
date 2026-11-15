@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+*.apk
+*.aab
+*.keystore
+*.jks
+android/.gradle/
+android/.idea/
+android/local.properties
+android/**/build/
+__pycache__/
+*.py[cod]
+reports/
+backups/
+.DS_Store

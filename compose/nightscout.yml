@@ -1,0 +1,47 @@
+services:
+  mongo:
+    image: mongo:5.0.32
+    container_name: nightscout-mongo
+    restart: unless-stopped
+    volumes: [nightscout_mongo_data:/data/db]
+    networks: [nightscout_private]
+    healthcheck:
+      test: ["CMD", "mongo", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+  nightscout:
+    image: nightscout/cgm-remote-monitor:latest
+    container_name: nightscout
+    restart: unless-stopped
+    depends_on: {mongo: {condition: service_healthy}}
+    environment:
+      NODE_ENV: production
+      TZ: ${TZ}
+      TIME_FORMAT: "24"
+      MONGO_CONNECTION: mongodb://mongo:27017/nightscout
+      API_SECRET: ${NIGHTSCOUT_API_SECRET}
+      AUTH_DEFAULT_ROLES: denied
+      INSECURE_USE_HTTP: "true"
+      TRUST_PROXY: "1"
+      NIGHTSCOUT_HOSTNAME: 0.0.0.0
+      ENABLE: careportal rawbg iob cors
+    networks: [nightscout_private, cloudflare_tunnel]
+  backup:
+    image: mongo:5.0.32
+    container_name: nightscout-backup
+    restart: unless-stopped
+    depends_on: {mongo: {condition: service_healthy}}
+    environment:
+      BACKUP_ENCRYPTION_PASSWORD: ${NIGHTSCOUT_BACKUP_ENCRYPTION_PASSWORD}
+    command: ["/bin/sh", "-ec", "while true; do s=$$(date -u +%Y%m%dT%H%M%SZ); mongodump --uri=mongodb://mongo:27017/nightscout --archive --gzip | openssl enc -aes-256-cbc -salt -pbkdf2 -iter 600000 -pass env:BACKUP_ENCRYPTION_PASSWORD -out /backups/nightscout-$$s.archive.gz.enc; find /backups -name 'nightscout-*.archive.gz.enc' -mtime +30 -delete; sleep 86400; done"]
+    volumes: [nightscout_backups:/backups]
+    networks: [nightscout_private]
+volumes:
+  nightscout_mongo_data: {name: nightscout_mongo_data}
+  nightscout_backups:
+    driver: local
+    driver_opts: {type: nfs, o: "addr=${NAS_IP},nfsvers=${NAS_NFS_VERSION},rw", device: "${NIGHTSCOUT_BACKUPS_NFS_PATH}"}
+networks:
+  nightscout_private: {name: nightscout_private, internal: true}
+  cloudflare_tunnel: {external: true, name: "${CLOUDFLARE_TUNNEL_NETWORK}"}

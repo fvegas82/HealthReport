@@ -1,0 +1,85 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: healthhub-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: healthhub
+      POSTGRES_USER: healthhub
+      POSTGRES_PASSWORD: ${HEALTHHUB_DB_PASSWORD}
+    volumes: [healthhub_postgres_data:/var/lib/postgresql/data]
+    networks: [healthhub_private]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U healthhub -d healthhub"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ../api
+    image: health-report-api:local
+    container_name: healthhub-api
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      DATABASE_URL: postgresql://healthhub:${HEALTHHUB_DB_PASSWORD}@postgres:5432/healthhub
+      HEALTHHUB_INGEST_KEY: ${HEALTHHUB_INGEST_KEY}
+      TZ: ${TZ}
+    networks: [healthhub_private, cloudflare_tunnel]
+
+  reporter:
+    build: ../reporter
+    image: health-report-reporter:local
+    container_name: healthhub-reporter
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      DATABASE_URL: postgresql://healthhub:${HEALTHHUB_DB_PASSWORD}@postgres:5432/healthhub
+      NIGHTSCOUT_URL: http://nightscout:1337
+      NIGHTSCOUT_API_SECRET: ${NIGHTSCOUT_API_SECRET}
+      TZ: ${TZ}
+    volumes:
+      - nightscout_reports:/reports
+      - nightscout_backups:/backups:ro
+    networks: [healthhub_private, nightscout_private]
+
+  portal:
+    build: ../portal
+    image: health-report-portal:local
+    container_name: healthhub-portal
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      DATABASE_URL: postgresql://healthhub:${HEALTHHUB_DB_PASSWORD}@postgres:5432/healthhub
+      HEALTHHUB_PORTAL_KEY: ${HEALTHHUB_PORTAL_KEY}
+    volumes: [nightscout_reports:/reports]
+    networks: [healthhub_private, cloudflare_tunnel]
+
+  backup:
+    build: ../backup
+    image: health-report-backup:local
+    container_name: healthhub-backup
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      POSTGRES_PASSWORD: ${HEALTHHUB_DB_PASSWORD}
+      BACKUP_ENCRYPTION_PASSWORD: ${HEALTHHUB_BACKUP_ENCRYPTION_PASSWORD}
+    volumes: [nightscout_backups:/backups]
+    networks: [healthhub_private]
+
+volumes:
+  healthhub_postgres_data: {name: healthhub_postgres_data}
+  nightscout_backups:
+    driver: local
+    driver_opts: {type: nfs, o: "addr=${NAS_IP},nfsvers=${NAS_NFS_VERSION},rw", device: "${NIGHTSCOUT_BACKUPS_NFS_PATH}"}
+  nightscout_reports:
+    driver: local
+    driver_opts: {type: nfs, o: "addr=${NAS_IP},nfsvers=${NAS_NFS_VERSION},rw", device: "${NIGHTSCOUT_REPORTS_NFS_PATH}"}
+networks:
+  healthhub_private: {name: healthhub_private, internal: true}
+  nightscout_private: {external: true, name: nightscout_private}
+  cloudflare_tunnel: {external: true, name: "${CLOUDFLARE_TUNNEL_NETWORK}"}

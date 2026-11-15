@@ -1,0 +1,10 @@
+name: Validate
+on: [push, pull_request]
+jobs:
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp .env.example .env
+      - run: docker compose --env-file .env -f compose/healthhub.yml config >/dev/null
+      - run: docker compose --env-file .env -f compose/nightscout.yml config >/dev/null
