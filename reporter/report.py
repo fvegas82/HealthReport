@@ -48,7 +48,9 @@ log = logging.getLogger(__name__)
 def glucose_from_nightscout(start, end):
     """Obtener lecturas de glucosa de Nightscout en rango de fechas."""
     try:
-        token = hashlib.sha1(os.environ["NIGHTSCOUT_API_SECRET"].encode()).hexdigest()
+        # Nightscout's API_SECRET in this deployment is already a SHA-1 value.
+        # Sending a second SHA-1 caused 401 responses and blank reports.
+        token = os.environ["NIGHTSCOUT_API_SECRET"]
         url = (f"{NIGHT}/api/v1/entries.json?count=100000&"
                f"find[date][$gte]={int(start.timestamp()*1000)}&"
                f"find[date][$lte]={int(end.timestamp()*1000)}")
