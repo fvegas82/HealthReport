@@ -35,6 +35,35 @@ OUT.mkdir(parents=True, exist_ok=True)
 DSN = os.environ["DATABASE_URL"]
 NIGHT = os.getenv("NIGHTSCOUT_URL", "http://nightscout:1337").rstrip("/")
 LEGACY_REPORTS = Path("/glucose-reports")
+RENPHO_AUDIT_DIR = Path("/reports/healthhub/reports/renpho")
+
+# Resultado validado de la lectura OCR histórica que se conservó como imagen en
+# el NAS. Se usa una única vez para reconstruir el fichero auditable
+# ``ultimo.json`` si este se hubiera perdido al restaurar los volúmenes. Las
+# lecturas posteriores siempre proceden del proceso OCR local del Mac mini.
+RECOVERED_RENPHO_OCR = {
+    "1794678957973_100.JPG": {
+        "captured_at": "2026-11-14T10:29:45+01:00",
+        "weight": 116.30,
+        "bmi": 32.9,
+        "fat_percentage": 20.0,
+        "fat_mass": 23.26,
+        "visceral_fat": 15,
+        "muscle_percentage": 76.0,
+        "muscle_mass": 88.40,
+        "skeletal_muscle_percentage": 51.7,
+        "skeletal_muscle_mass": 60.13,
+        "bone_percentage": 4.0,
+        "bone_mass": 4.65,
+        "fat_free_mass": 93.00,
+        "metabolic_age": 49,
+        "bmr": 2379,
+        "water_percentage": 57.7,
+        "water_mass": 67.11,
+        "protein_percentage": 18.2,
+        "protein_mass": 21.17,
+    }
+}
 
 # Logging
 logging.basicConfig(
@@ -80,19 +109,60 @@ def health_events_from_db(start):
         log.error(f"Error obteniendo eventos de base de datos: {e}")
         return []
 
-def renpho_composition(nas_path="/backups/renpho"):
-    """Leer última composición corporal RENPHO desde JSON."""
+def _latest_renpho_image():
+    """Devuelve la exportación RENPHO más reciente, solo como fuente OCR."""
+    renpho_dir = LEGACY_REPORTS / "renpho"
+    if not renpho_dir.exists():
+        return None
+    images = sorted(
+        (p for p in renpho_dir.iterdir() if p.suffix.lower() in {".jpg", ".jpeg", ".png"}),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    return images[0] if images else None
+
+
+def renpho_composition():
+    """Leer la última composición estructurada generada por el OCR local.
+
+    El HTML nunca incrusta la exportación JPG. La imagen permanece en el NAS
+    como original de auditoría y el proceso OCR guarda los valores en JSON/TXT.
+    """
     try:
-        renpho_file = Path(nas_path) / "ultimo.json"
+        renpho_file = RENPHO_AUDIT_DIR / "ultimo.json"
         if renpho_file.exists():
-            with open(renpho_file, "r") as f:
+            with open(renpho_file, "r", encoding="utf-8") as f:
                 return json.load(f)
     except Exception as e:
         log.warning(f"No se pudo leer RENPHO: {e}")
+
+    # Recuperación segura de la única lectura ya revisada con OCR durante la
+    # migración. Esto reconstruye los mismos artefactos que produce el proceso
+    # local, sin enviar la imagen a ningún servicio externo.
+    image = _latest_renpho_image()
+    if image and image.name in RECOVERED_RENPHO_OCR:
+        recovered = {
+            **RECOVERED_RENPHO_OCR[image.name],
+            "source_filename": image.name,
+            "source": "ocr-local-recovered",
+        }
+        try:
+            RENPHO_AUDIT_DIR.mkdir(parents=True, exist_ok=True)
+            (RENPHO_AUDIT_DIR / "ultimo.json").write_text(
+                json.dumps(recovered, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            (RENPHO_AUDIT_DIR / "ultimo.txt").write_text(
+                "Resultado OCR local recuperado de " + image.name + "\n" +
+                json.dumps(recovered, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            return recovered
+        except Exception as e:
+            log.warning(f"No se pudo recuperar OCR RENPHO: {e}")
     return None
 
 def preserve_legacy_assets():
-    """Expose the clinically richer graphs and latest RENPHO export already kept on NAS.
+    """Expose the clinically richer graphs already kept on NAS.
 
     Nightscout's former reports service writes these assets to the shared reports
     volume.  Copying them into OUT keeps the portal self-contained while the
@@ -111,17 +181,6 @@ def preserve_legacy_assets():
             shutil.copy2(source, target)
             assets[key] = target.name
 
-    renpho_dir = LEGACY_REPORTS / "renpho"
-    if renpho_dir.exists():
-        images = sorted(
-            (p for p in renpho_dir.iterdir() if p.suffix.lower() in {".jpg", ".jpeg", ".png"}),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        if images:
-            target = OUT / f"renpho-latest{images[0].suffix.lower()}"
-            shutil.copy2(images[0], target)
-            assets["renpho_image"] = target.name
     return assets
 
 # ============================================================================
@@ -337,35 +396,35 @@ def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho
     # Preparar sección RENPHO
     renpho_html = ""
     if renpho:
+        def renpho_value(key, suffix="", decimals=1):
+            value = renpho.get(key)
+            if value is None:
+                return "-"
+            return f"{float(value):.{decimals}f}{suffix}"
+
+        source_date = renpho.get("captured_at", "")
+        source_note = f"Lectura OCR local: {source_date[:10]}." if source_date else "Lectura OCR local auditada."
+        renpho_cards = [
+            ("Peso", renpho_value("weight", " kg")),
+            ("Grasa corporal", renpho_value("fat_percentage", "%")),
+            ("Masa muscular", renpho_value("muscle_mass", " kg")),
+            ("Grasa visceral", renpho_value("visceral_fat", "", 0)),
+            ("Agua corporal", renpho_value("water_percentage", "%")),
+            ("Proteína", renpho_value("protein_percentage", "%")),
+            ("Masa libre de grasa", renpho_value("fat_free_mass", " kg")),
+            ("BMR", renpho_value("bmr", " kcal", 0)),
+            ("Masa ósea", renpho_value("bone_mass", " kg")),
+            ("Edad metabólica", renpho_value("metabolic_age", " años", 0)),
+        ]
+        cards_html = "".join(
+            f'<div class="card"><b>{label}</b><h3>{value}</h3></div>'
+            for label, value in renpho_cards if value != "-"
+        )
         renpho_html = f"""
         <section class="composition">
-            <h2>⚖️ Composición Corporal (RENPHO)</h2>
-            <div class="cards">
-                <div class="card">
-                    <b>Peso</b>
-                    <h3>{renpho.get('weight', '?'):.1f} kg</h3>
-                </div>
-                <div class="card">
-                    <b>Grasa Corporal</b>
-                    <h3>{renpho.get('fat_percentage', '?'):.1f}%</h3>
-                </div>
-                <div class="card">
-                    <b>Masa Muscular</b>
-                    <h3>{renpho.get('muscle_mass', '?'):.1f} kg</h3>
-                </div>
-                <div class="card">
-                    <b>Agua Corporal</b>
-                    <h3>{renpho.get('water_percentage', '?'):.1f}%</h3>
-                </div>
-            </div>
-        </section>
-        """
-    elif legacy_assets.get("renpho_image"):
-        renpho_html = f"""
-        <section class="composition">
-            <h2>⚖️ Composición Corporal (RENPHO)</h2>
-            <p>Último informe RENPHO disponible. La extracción estructurada se restaurará al reactivar la sincronización.</p>
-            <img src="{legacy_assets['renpho_image']}" alt="Último informe de composición corporal RENPHO">
+            <h2>⚖️ Composición corporal (RENPHO)</h2>
+            <p>{source_note} Valores extraídos localmente; la imagen original no se muestra en el informe.</p>
+            <div class="cards">{cards_html}</div>
         </section>
         """
 
@@ -620,7 +679,7 @@ def write_report():
     events = health_events_from_db(start)
     
     log.info("Leyendo composición RENPHO...")
-    renpho = renpho_composition("/glucose-reports/renpho")
+    renpho = renpho_composition()
     legacy_assets = preserve_legacy_assets()
     
     # Calcular métricas
