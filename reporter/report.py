@@ -125,6 +125,7 @@ def _latest_renpho_image():
 def normalize_renpho_reading(reading):
     """Compatibilidad con el JSON generado por el OCR original del Mac mini."""
     normalized = dict(reading)
+    metrics = reading.get("metrics", {})
     aliases = {
         "weight": ("weight_kg",),
         "fat_percentage": ("body_fat_pct", "fat_pct"),
@@ -145,9 +146,12 @@ def normalize_renpho_reading(reading):
     for canonical, legacy_keys in aliases.items():
         if normalized.get(canonical) is None:
             for legacy_key in legacy_keys:
-                if reading.get(legacy_key) is not None:
-                    normalized[canonical] = reading[legacy_key]
+                value = reading.get(legacy_key, metrics.get(legacy_key))
+                if value is not None:
+                    normalized[canonical] = value
                     break
+    if normalized.get("captured_at") is None:
+        normalized["captured_at"] = reading.get("processed_at")
     return normalized
 
 
