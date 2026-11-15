@@ -334,25 +334,29 @@ def plot_daily_profiles(values, events, output_dir):
             # la línea vertical se muestra una etiqueta, para que el evento
             # siga siendo identificable incluso en pantallas pequeñas.
             if day in events_by_day:
+                insulin_markers = 0
+                workout_markers = 0
                 for evt_type, when, payload in events_by_day[day]:
                     if evt_type == "InsulinDoseRecord":
                         units = payload.get("units", "?")
                         ax.axvline(when, color="#dc2626", linestyle="--", alpha=0.9, linewidth=1.8)
                         ax.annotate(
-                            f"Insulina {units}U", xy=(when, 290), xytext=(0, -4),
+                            f"Insulina {units}U", xy=(when, 290 - 24 * (insulin_markers % 3)), xytext=(0, -4),
                             textcoords="offset points", rotation=90, va="top", ha="right",
                             fontsize=8, color="#991b1b", fontweight="bold",
                             bbox={"boxstyle": "round,pad=0.2", "fc": "#fee2e2", "ec": "none", "alpha": 0.9},
                         )
+                        insulin_markers += 1
                     elif evt_type == "ExerciseSessionRecord":
                         minutes = payload.get("duration_minutes", "?")
                         ax.axvline(when, color="#9333ea", linestyle="--", alpha=0.9, linewidth=1.8)
                         ax.annotate(
-                            f"Ejercicio {minutes} min", xy=(when, 285), xytext=(0, -4),
+                            f"Ejercicio {minutes} min", xy=(when, 285 - 24 * (workout_markers % 3)), xytext=(0, -4),
                             textcoords="offset points", rotation=90, va="top", ha="left",
                             fontsize=8, color="#6b21a8", fontweight="bold",
                             bbox={"boxstyle": "round,pad=0.2", "fc": "#f3e8ff", "ec": "none", "alpha": 0.9},
                         )
+                        workout_markers += 1
             
             ax.set(xlim=(datetime.combine(day, datetime.min.time(), tzinfo=TZ),
                          datetime.combine(day, datetime.max.time(), tzinfo=TZ)),
