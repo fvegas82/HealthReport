@@ -1,0 +1,121 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: healthhub-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: healthhub
+      POSTGRES_USER: healthhub
+      POSTGRES_PASSWORD: ${HEALTHHUB_DB_PASSWORD}
+    volumes:
+      - healthhub_postgres_data:/var/lib/postgresql/data
+    networks:
+      - healthhub_private
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U healthhub -d healthhub"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  api:
+    image: python:3.12-slim
+    container_name: healthhub-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://healthhub:${HEALTHHUB_DB_PASSWORD}@postgres:5432/healthhub
+      HEALTHHUB_INGEST_KEY: ${HEALTHHUB_INGEST_KEY}
+      TZ: Europe/Madrid
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        pip install --no-cache-dir fastapi 'uvicorn[standard]' 'psycopg[binary]'
+        mkdir -p /app
+        printf '%s' 'aW1wb3J0IG9zLGpzb24saGFzaGxpYgpmcm9tIGZhc3RhcGkgaW1wb3J0IEZhc3RBUEksSGVhZGVyLEhUVFBFeGNlcHRpb24KaW1wb3J0IHBzeWNvcGcKYXBwPUZhc3RBUEkodGl0bGU9IlBlcnNvbmFsIEhlYWx0aCBIdWIiLGRvY3NfdXJsPU5vbmUscmVkb2NfdXJsPU5vbmUpCkRTTj1vcy5lbnZpcm9uWyJEQVRBQkFTRV9VUkwiXTsgS0VZPW9zLmVudmlyb25bIkhFQUxUSEhVQl9JTkdFU1RfS0VZIl0KZGVmIGRiKCk6IHJldHVybiBwc3ljb3BnLmNvbm5lY3QoRFNOKQpAYXBwLm9uX2V2ZW50KCJzdGFydHVwIikKZGVmIGluaXQoKToKIHdpdGggZGIoKSBhcyBjOgogIGMuZXhlY3V0ZSgiQ1JFQVRFIFRBQkxFIElGIE5PVCBFWElTVFMgaGVhbHRoX2V2ZW50cyAoaWQgQklHU0VSSUFMIFBSSU1BUlkgS0VZLCBzb3VyY2UgVEVYVCBOT1QgTlVMTCwgZXZlbnRfdHlwZSBURVhUIE5PVCBOVUxMLCBvY2N1cnJlZF9hdCBUSU1FU1RBTVBUWiwgcmVjZWl2ZWRfYXQgVElNRVNUQU1QVFogTk9UIE5VTEwgREVGQVVMVCBub3coKSwgcGF5bG9hZCBKU09OQiBOT1QgTlVMTCwgZGlnZXN0IENIQVIoNjQpIFVOSVFVRSBOT1QgTlVMTCkiKQpAYXBwLmdldCgiL2hlYWx0aCIpCmRlZiBoZWFsdGgoKTogcmV0dXJuIHsic3RhdHVzIjoib2sifQpAYXBwLnBvc3QoIi92MS9pbmdlc3QiKQpkZWYgaW5nZXN0KHJlY29yZDpkaWN0LHhfYXBpX2tleTpzdHI9SGVhZGVyKGRlZmF1bHQ9IiIpKToKIGlmIHhfYXBpX2tleSE9S0VZOiByYWlzZSBIVFRQRXhjZXB0aW9uKDQwMSwidW5hdXRob3JpemVkIikKIHNvdXJjZT1zdHIocmVjb3JkLmdldCgic291cmNlIiwidW5rbm93biIpKTsgZXZlbnRfdHlwZT1zdHIocmVjb3JkLmdldCgiZXZlbnRfdHlwZSIsInVua25vd24iKSk7IG9jY3VycmVkX2F0PXJlY29yZC5nZXQoIm9jY3VycmVkX2F0IikKIHBheWxvYWQ9anNvbi5kdW1wcyhyZWNvcmQsc29ydF9rZXlzPVRydWUsc2VwYXJhdG9ycz0oIiwiLCI6IikpOyBkaWdlc3Q9aGFzaGxpYi5zaGEyNTYocGF5bG9hZC5lbmNvZGUoKSkuaGV4ZGlnZXN0KCkKIHdpdGggZGIoKSBhcyBjOgogIGMuZXhlY3V0ZSgiSU5TRVJUIElOVE8gaGVhbHRoX2V2ZW50cyAoc291cmNlLGV2ZW50X3R5cGUsb2NjdXJyZWRfYXQscGF5bG9hZCxkaWdlc3QpIFZBTFVFUyAoJXMsJXMsJXMsJXM6Ompzb25iLCVzKSBPTiBDT05GTElDVCAoZGlnZXN0KSBETyBOT1RISU5HIiwoc291cmNlLGV2ZW50X3R5cGUsb2NjdXJyZWRfYXQscGF5bG9hZCxkaWdlc3QpKQogcmV0dXJuIHsiYWNjZXB0ZWQiOlRydWV9Cg==' | base64 -d > /app/main.py
+        exec uvicorn main:app --app-dir /app --host 0.0.0.0 --port 8080
+    networks:
+      - healthhub_private
+      - cloudflare_tunnel
+
+  backup:
+    image: postgres:16-alpine
+    container_name: healthhub-backup
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${HEALTHHUB_DB_PASSWORD}
+      BACKUP_ENCRYPTION_PASSWORD: ${HEALTHHUB_BACKUP_ENCRYPTION_PASSWORD}
+      TZ: Europe/Madrid
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        apk add --no-cache openssl
+        mkdir -p /backups/healthhub
+        while true; do
+          stamp=$$(date +%F)
+          tmp=/tmp/healthhub-$${stamp}.sql
+          out=/backups/healthhub/healthhub-$${stamp}.sql.gz.enc
+          pg_dump -h postgres -U healthhub -d healthhub > "$$tmp"
+          gzip -9 -c "$$tmp" | openssl enc -aes-256-cbc -salt -pbkdf2 -pass env:BACKUP_ENCRYPTION_PASSWORD > "$$out"
+          rm -f "$$tmp"
+          find /backups/healthhub -type f -name "healthhub-*.sql.gz.enc" -mtime +30 -delete
+          sleep 86400
+        done
+    volumes:
+      - healthhub_backups:/backups
+    networks:
+      - healthhub_private
+      - cloudflare_tunnel
+
+  # ============================================================================
+  # REPORTER v2.0 - Health Report Generator
+  # Clona desde GitHub y ejecuta con Base64 (Simple y Sostenible)
+  # ============================================================================
+  reporter:
+    image: python:3.12-slim
+    container_name: healthhub-reporter
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://healthhub:${HEALTHHUB_DB_PASSWORD}@postgres:5432/healthhub
+      NIGHTSCOUT_URL: http://nightscout:1337
+      NIGHTSCOUT_API_SECRET: ${NIGHTSCOUT_API_SECRET}
+      TZ: Europe/Madrid
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        apk add --no-cache git
+        mkdir -p /app /reports/healthhub/reports
+        printf '%s' 'IyEvYmluL3NoCnNldCAtZXUKCiMgSGVhbHRoIFJlcG9ydCBHZW5lcmF0b3IgdjIuMAojIENsb25hIGPDs2RpZ28gZGVzZGUgR2l0SHViIHkgZWplY3V0YQoKbWtkaXIgLXAgL2FwcCAvcmVwb3J0cy9oZWFsdGhodWIvcmVwb3J0cwoKIyBDbG9uZSBkZXNkZSBHaXRIdWIKZWNobyAiQ2xvbmFuZG8gY8OzZGlnbyBkZXNkZSBHaXRIdWIuLi4iCmNkIC90bXAKZ2l0IGNsb25lIC0tZGVwdGggMSAtLWJyYW5jaCBtYXN0ZXIgaHR0cHM6Ly9naXRodWIuY29tL2Z2ZWdhczgyL0hlYWx0aFJlcG9ydC5naXQKY3AgL3RtcC9IZWFsdGhSZXBvcnQvcmVwb3J0ZXIvcmVwb3J0LnB5IC9hcHAvCgojIEluc3RhbGFyIGRlcGVuZGVuY2lhcyBQeXRob24KZWNobyAiSW5zdGFsYW5kbyBkZXBlbmRlbmNpYXMuLi4iCnBpcCBpbnN0YWxsIC0tbm8tY2FjaGUtZGlyIFwKICBtYXRwbG90bGliPT0zLjEwLjEgXAogIG51bXB5PT0yLjIuNCBcCiAgJ3BzeWNvcGdbYmluYXJ5XT09My4yLjYnIFwKICBQaWxsb3c9PTExLjAuMCBcCiAgamluamEyPT0zLjEuNAoKIyBMaW1waWFyCnJtIC1yZiAvdG1wL0hlYWx0aFJlcG9ydAoKIyBFamVjdXRhcgplY2hvICJJbmljaWFuZG8gSGVhbHRoIFJlcG9ydCBHZW5lcmF0b3IgdjIuMC4uLiIKZXhlYyBweXRob24gL2FwcC9yZXBvcnQucHkK' | base64 -d > /app/reporter.sh
+        exec /bin/sh /app/reporter.sh
+    volumes:
+      - healthhub_backups:/reports
+      - nightscout_reports:/glucose-reports:ro
+    networks:
+      - healthhub_private
+
+volumes:
+  healthhub_postgres_data:
+  healthhub_backups:
+    external: true
+    name: nightscout_nightscout_backups
+  nightscout_reports:
+    external: true
+    name: nightscout_nightscout_reports
+
+networks:
+  healthhub_private:
+    name: healthhub_private
+    internal: true
+  cloudflare_tunnel:
+    external: true
+    name: cloudflare_tunnel_default
