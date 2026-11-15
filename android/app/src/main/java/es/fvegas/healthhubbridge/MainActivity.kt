@@ -87,7 +87,9 @@ class MainActivity : ComponentActivity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             setText(prefs.getString("accessClientSecret", ""))
         }
-        status = TextView(this).apply { text = "Aún no configurado." }
+        status = TextView(this).apply {
+            text = prefs.getString("lastSyncStatus", "Aún no configurado.")
+        }
         val grant = Button(this).apply { text = "Conceder permisos de Health Connect" }
         val save = Button(this).apply { text = "Guardar y activar sincronización" }
         val backfill = Button(this).apply { text = "Reimportar últimos 30 días" }

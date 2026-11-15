@@ -198,19 +198,9 @@ def renpho_composition():
     return None
 
 def preserve_legacy_assets():
-    """Expose the clinically richer graphs already kept on NAS.
-
-    Nightscout's former reports service writes these assets to the shared reports
-    volume.  Copying them into OUT keeps the portal self-contained while the
-    unified generator is rebuilt from source control.
-    """
+    """Conservar solo la comparativa de 14 días que no duplica datos en vivo."""
     assets = {}
-    for key, filename in {
-        "profile": "healthhub-glucose-14d.png",
-        "agp": "healthhub-agp-14d.png",
-        "comparison": "healthhub-compare-14d.png",
-        "daily": "healthhub-daily-14d.png",
-    }.items():
+    for key, filename in {"comparison": "healthhub-compare-14d.png"}.items():
         source = LEGACY_REPORTS / filename
         if source.exists():
             target = OUT / f"legacy-{filename}"
@@ -465,17 +455,12 @@ def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho
         """
 
     legacy_glucose_html = ""
-    if legacy_assets:
-        graph = lambda key, title, note: (
-            f'<section><h2>{title}</h2><img src="{legacy_assets[key]}" alt="{title}"><p><small>{note}</small></p></section>'
-            if key in legacy_assets else ""
+    if "comparison" in legacy_assets:
+        legacy_glucose_html = (
+            '<section><h2>Comparativa de 14 días</h2>'
+            f'<img src="{legacy_assets["comparison"]}" alt="Comparativa de 14 días">'
+            '<p><small>Una curva por día para comparar patrones horarios.</small></p></section>'
         )
-        legacy_glucose_html = "".join([
-            graph("profile", "Perfil glucémico ampliado", "Resumen conservado del generador clínico anterior."),
-            graph("agp", "AGP clínico", "Perfil ambulatorio de glucosa con percentiles."),
-            graph("comparison", "Comparativa de 14 días", "Una curva por día para comparar patrones horarios."),
-            graph("daily", "Glucosa día a día", "Perfiles diarios ampliados del informe anterior."),
-        ])
     
     # Preparar imágenes de perfiles diarios
     profiles_html = ""

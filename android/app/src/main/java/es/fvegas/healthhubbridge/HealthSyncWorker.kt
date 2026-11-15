@@ -23,7 +23,13 @@ class HealthSyncWorker(appContext: Context, params: WorkerParameters) : Coroutin
         val key = prefs.getString("key", "") ?: ""
         val accessClientId = prefs.getString("accessClientId", "") ?: ""
         val accessClientSecret = prefs.getString("accessClientSecret", "") ?: ""
-        if (endpoint.isBlank() || key.isBlank() || accessClientId.isBlank() || accessClientSecret.isBlank()) return Result.success()
+        if (endpoint.isBlank() || key.isBlank() || accessClientId.isBlank() || accessClientSecret.isBlank()) {
+            prefs.edit().putString(
+                "lastSyncStatus",
+                "Configuración incompleta: revisa dirección, clave y credenciales de Cloudflare Access."
+            ).apply()
+            return Result.failure()
+        }
         return try {
             val client = HealthConnectClient.getOrCreate(applicationContext)
             val requestedBackfill = inputData.getBoolean("backfill30Days", false)
@@ -38,9 +44,18 @@ class HealthSyncWorker(appContext: Context, params: WorkerParameters) : Coroutin
                 if (requestedBackfill) ChronoUnit.DAYS else ChronoUnit.HOURS
             )
             HealthRepository(client, endpoint, key, accessClientId, accessClientSecret).syncRecent(start)
-            prefs.edit().putBoolean("initialBackfillCompleted", true).apply()
+            prefs.edit()
+                .putBoolean("initialBackfillCompleted", true)
+                .putString("lastSyncStatus", "Última sincronización correcta: ${java.time.Instant.now()}")
+                .apply()
             Result.success()
-        } catch (_: Exception) { Result.retry() }
+        } catch (e: Exception) {
+            prefs.edit().putString(
+                "lastSyncStatus",
+                "Error de sincronización: ${e.javaClass.simpleName}${e.message?.let { ": $it" } ?: ""}"
+            ).apply()
+            Result.retry()
+        }
     }
 
     companion object {
