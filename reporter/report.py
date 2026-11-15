@@ -145,6 +145,9 @@ def normalize_renpho_reading(reading):
     }
     for canonical, legacy_keys in aliases.items():
         if normalized.get(canonical) is None:
+            if metrics.get(canonical) is not None:
+                normalized[canonical] = metrics[canonical]
+                continue
             for legacy_key in legacy_keys:
                 value = reading.get(legacy_key, metrics.get(legacy_key))
                 if value is not None:
