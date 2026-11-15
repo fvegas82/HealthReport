@@ -199,11 +199,14 @@ def renpho_composition():
     return None
 
 def preserve_legacy_assets():
-    """Conservar los paneles históricos de 14 días sin duplicar el AGP en vivo."""
+    """Conservar únicamente la comparativa histórica de 14 días.
+
+    Los perfiles diarios se vuelven a generar en cada informe porque son el
+    soporte donde se dibujan las dosis de insulina y los entrenamientos.
+    """
     assets = {}
     for key, filename in {
         "comparison": "healthhub-compare-14d.png",
-        "daily": "healthhub-daily-14d.png",
     }.items():
         source = LEGACY_REPORTS / filename
         if source.exists():
@@ -327,13 +330,29 @@ def plot_daily_profiles(values, events, output_dir):
             ax.plot(times, glu, marker='o', lw=1.5, markersize=4, color="#1e40af")
             ax.fill_between(times, 40, glu, alpha=0.15, color="#3b82f6")
             
-            # Marcar insulina (rojo) y entrenamientos (violeta)
+            # Marcar insulina (rojo) y entrenamientos (violeta). Además de
+            # la línea vertical se muestra una etiqueta, para que el evento
+            # siga siendo identificable incluso en pantallas pequeñas.
             if day in events_by_day:
                 for evt_type, when, payload in events_by_day[day]:
                     if evt_type == "InsulinDoseRecord":
-                        ax.axvline(when, color="#dc2626", linestyle="--", alpha=0.6, linewidth=1)
+                        units = payload.get("units", "?")
+                        ax.axvline(when, color="#dc2626", linestyle="--", alpha=0.9, linewidth=1.8)
+                        ax.annotate(
+                            f"Insulina {units}U", xy=(when, 290), xytext=(0, -4),
+                            textcoords="offset points", rotation=90, va="top", ha="right",
+                            fontsize=8, color="#991b1b", fontweight="bold",
+                            bbox={"boxstyle": "round,pad=0.2", "fc": "#fee2e2", "ec": "none", "alpha": 0.9},
+                        )
                     elif evt_type == "ExerciseSessionRecord":
-                        ax.axvline(when, color="#9333ea", linestyle="--", alpha=0.6, linewidth=1)
+                        minutes = payload.get("duration_minutes", "?")
+                        ax.axvline(when, color="#9333ea", linestyle="--", alpha=0.9, linewidth=1.8)
+                        ax.annotate(
+                            f"Ejercicio {minutes} min", xy=(when, 285), xytext=(0, -4),
+                            textcoords="offset points", rotation=90, va="top", ha="left",
+                            fontsize=8, color="#6b21a8", fontweight="bold",
+                            bbox={"boxstyle": "round,pad=0.2", "fc": "#f3e8ff", "ec": "none", "alpha": 0.9},
+                        )
             
             ax.set(xlim=(datetime.combine(day, datetime.min.time(), tzinfo=TZ),
                          datetime.combine(day, datetime.max.time(), tzinfo=TZ)),
@@ -465,7 +484,6 @@ def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho
     )
     legacy_glucose_html = "".join([
         graph("comparison", "Comparativa de 14 días", "Una curva por día para comparar patrones horarios."),
-        graph("daily", "Glucosa día a día: últimos 14 días", "Perfiles diarios ampliados, ordenados por fecha."),
     ])
     
     # Preparar imágenes de perfiles diarios
@@ -640,6 +658,8 @@ def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho
     </section>
     
     {legacy_glucose_html}
+
+    {profiles_html}
     
     {renpho_html}
     
