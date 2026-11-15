@@ -198,9 +198,12 @@ def renpho_composition():
     return None
 
 def preserve_legacy_assets():
-    """Conservar solo la comparativa de 14 días que no duplica datos en vivo."""
+    """Conservar los paneles históricos de 14 días sin duplicar el AGP en vivo."""
     assets = {}
-    for key, filename in {"comparison": "healthhub-compare-14d.png"}.items():
+    for key, filename in {
+        "comparison": "healthhub-compare-14d.png",
+        "daily": "healthhub-daily-14d.png",
+    }.items():
         source = LEGACY_REPORTS / filename
         if source.exists():
             target = OUT / f"legacy-{filename}"
@@ -455,12 +458,14 @@ def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho
         """
 
     legacy_glucose_html = ""
-    if "comparison" in legacy_assets:
-        legacy_glucose_html = (
-            '<section><h2>Comparativa de 14 días</h2>'
-            f'<img src="{legacy_assets["comparison"]}" alt="Comparativa de 14 días">'
-            '<p><small>Una curva por día para comparar patrones horarios.</small></p></section>'
-        )
+    graph = lambda key, title, note: (
+        f'<section><h2>{title}</h2><img src="{legacy_assets[key]}" alt="{title}">'
+        f'<p><small>{note}</small></p></section>' if key in legacy_assets else ""
+    )
+    legacy_glucose_html = "".join([
+        graph("comparison", "Comparativa de 14 días", "Una curva por día para comparar patrones horarios."),
+        graph("daily", "Glucosa día a día: últimos 14 días", "Perfiles diarios ampliados, ordenados por fecha."),
+    ])
     
     # Preparar imágenes de perfiles diarios
     profiles_html = ""
@@ -633,8 +638,6 @@ def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho
         <p><small>Percentiles de glucosa por hora (últimos 14 días). P5-P95 (claro), P25-P75 (oscuro), P50 (línea central).</small></p>
     </section>
     
-    {profiles_html}
-
     {legacy_glucose_html}
     
     {renpho_html}
