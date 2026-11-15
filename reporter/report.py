@@ -26,7 +26,7 @@ import psycopg
 # ============================================================================
 
 TZ = ZoneInfo(os.getenv("TZ", "Europe/Madrid"))
-OUT = Path("/reports/healthhub/reports")
+OUT = Path("/reports/healthhub/reports/semanal")
 OUT.mkdir(parents=True, exist_ok=True)
 DSN = os.environ["DATABASE_URL"]
 NIGHT = os.getenv("NIGHTSCOUT_URL", "http://nightscout:1337").rstrip("/")
