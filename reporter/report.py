@@ -32,6 +32,7 @@ TZ = ZoneInfo(os.getenv("TZ", "Europe/Madrid"))
 # assets with database backups.
 OUT = Path("/reports/healthhub/reports/semanal")
 OUT.mkdir(parents=True, exist_ok=True)
+REFRESH_REQUEST = OUT.parent / ".refresh-request"
 DSN = os.environ["DATABASE_URL"]
 NIGHT = os.getenv("NIGHTSCOUT_URL", "http://nightscout:1337").rstrip("/")
 LEGACY_REPORTS = Path("/glucose-reports")
@@ -740,11 +741,12 @@ def write_report():
     # Crear último enlace
     latest_file = OUT / "ultimo.html"
     latest_file.write_text(html, encoding="utf-8")
+    REFRESH_REQUEST.unlink(missing_ok=True)
     log.info("✅ Informe generado exitosamente")
 
 def main():
     """Loop principal de generación."""
-    log.info("Health Report Generator iniciado. Generando cada 5 minutos...")
+    log.info("Health Report Generator iniciado. Generando cada 5 minutos o bajo demanda...")
     
     while True:
         try:
@@ -752,7 +754,12 @@ def main():
         except Exception as error:
             log.error(f"Error generando informe: {error}", exc_info=True)
         
-        time.sleep(300)  # Cada 5 minutos
+        # El portal escribe este marcador al registrar una dosis o entrenamiento.
+        # Así el cambio aparece enseguida sin esperar al ciclo normal de 5 minutos.
+        for _ in range(60):
+            if REFRESH_REQUEST.exists():
+                break
+            time.sleep(5)
 
 if __name__ == "__main__":
     main()

@@ -6,14 +6,24 @@ from fastapi import FastAPI, Form
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 app=FastAPI(docs_url=None,redoc_url=None); DSN=os.environ["DATABASE_URL"]; REPORTS=Path("/reports/healthhub/reports/semanal")
+REFRESH_REQUEST = REPORTS.parent / ".refresh-request"
 def event(kind, occurred_at, payload):
     record={"source":"portal","event_type":kind,"occurred_at":occurred_at,"payload":payload}
     raw=json.dumps(record,sort_keys=True,separators=(",",":")); digest=hashlib.sha256(raw.encode()).hexdigest()
-    with psycopg.connect(DSN) as db: db.execute("INSERT INTO health_events(source,event_type,occurred_at,payload,digest) VALUES(%s,%s,%s,%s::jsonb,%s) ON CONFLICT(digest) DO NOTHING",("portal",kind,occurred_at,json.dumps(payload),digest))
+    with psycopg.connect(DSN) as db:
+        db.execute("INSERT INTO health_events(source,event_type,occurred_at,payload,digest) VALUES(%s,%s,%s,%s::jsonb,%s) ON CONFLICT(digest) DO NOTHING",("portal",kind,occurred_at,json.dumps(payload),digest))
+    REFRESH_REQUEST.parent.mkdir(parents=True, exist_ok=True)
+    REFRESH_REQUEST.touch()
 
 @app.get("/",response_class=HTMLResponse)
 def index():
-    return '''<!doctype html><html lang="es"><meta charset="utf-8"><title>Health Report</title><style>body{font:16px system-ui;margin:2rem auto;max-width:1050px}form{display:inline-block;vertical-align:top;padding:1rem;margin:0 1rem 1rem 0;border:1px solid #ddd;border-radius:10px}input,select,button{padding:.55rem;margin:.25rem}</style><h1>Health Report</h1><p>Acceso personal protegido. Los datos son descriptivos y no constituyen recomendaciones clínicas.</p><form method="post" action="/insulin"><h2>Registrar insulina</h2><input required type="datetime-local" name="at"><input required type="number" step="0.1" min="0" name="units" placeholder="Unidades"><select name="kind"><option>rapida</option><option>basal</option><option>otra</option></select><button>Guardar</button></form><form method="post" action="/workout"><h2>Registrar entrenamiento</h2><input required type="datetime-local" name="at"><input required type="number" min="1" name="minutes" placeholder="Minutos"><select name="intensity"><option>ligera</option><option selected>media</option><option>alta</option></select><button>Guardar</button></form><p><a href="/report/healthhub-semanal.html">Abrir informe actualizado</a> (se regenera cada cinco minutos).</p></html>'''
+    now = datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M")
+    return f'''<!doctype html><html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Health Report</title><style>
+    *{{box-sizing:border-box}} body{{margin:0;background:#f3f6fb;color:#17243a;font:16px system-ui}} .bar{{background:#102a43;color:#fff;padding:14px 22px;display:flex;gap:14px;align-items:center}}.bar b{{font-size:20px}}.bar span{{opacity:.85;flex:1}} main{{max-width:1280px;margin:auto;padding:20px}}.forms{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-bottom:18px}}form{{background:#fff;padding:18px;border-radius:12px;box-shadow:0 2px 10px #102a4318}}h2{{margin:0 0 12px;font-size:18px}}label{{display:block;font-size:13px;font-weight:650;margin-top:9px}}input,select,button{{width:100%;padding:10px;margin-top:4px;border:1px solid #ccd6e3;border-radius:8px;font:inherit}}button{{border:0;background:#38b66b;color:#062a1b;font-weight:750;cursor:pointer;margin-top:15px}}iframe{{width:100%;min-height:82vh;border:0;border-radius:12px;background:#fff;box-shadow:0 2px 10px #102a4320}}small{{color:#53647d}}</style>
+    <div class="bar"><b>Health Report</b><span>Acceso personal protegido</span><a href="/report/healthhub-semanal.html" style="color:#fff">Abrir informe</a></div><main><div class="forms">
+    <form method="post" action="/insulin"><h2>Registrar dosis de insulina</h2><label>Fecha y hora<input required type="datetime-local" name="at" value="{now}"></label><label>Unidades<input required type="number" step="0.1" min="0.1" name="units" placeholder="Ej. 4.5"></label><label>Tipo<select name="kind"><option value="rapida">Rapida</option><option value="basal">Basal</option><option value="otra">Otra</option></select></label><button>Guardar dosis y actualizar informe</button></form>
+    <form method="post" action="/workout"><h2>Registrar entrenamiento</h2><label>Inicio<input required type="datetime-local" name="at" value="{now}"></label><label>Duracion (minutos)<input required type="number" min="1" name="minutes" placeholder="Ej. 45"></label><label>Intensidad<select name="intensity"><option value="ligera">Ligera</option><option value="media" selected>Media</option><option value="alta">Alta</option></select></label><button>Guardar entrenamiento y actualizar informe</button></form>
+    </div><p><small>Al guardar, el informe se regenera automáticamente y los eventos se marcan en los perfiles de glucosa.</small></p><iframe src="/report/healthhub-semanal.html" title="Informe integrado"></iframe></main></html>'''
 @app.post("/insulin")
 def insulin(at:str=Form(...),units:float=Form(...),kind:str=Form(...)):
     event("InsulinDoseRecord",datetime.fromisoformat(at).astimezone().isoformat(),{"units":units,"type":kind}); return RedirectResponse("/",303)
