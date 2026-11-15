@@ -7,6 +7,7 @@ Genera HTML con glucosa, actividad, composición corporal e insulina.
 import hashlib
 import json
 import os
+import shutil
 import time
 import urllib.request
 from datetime import datetime, timedelta
@@ -33,6 +34,7 @@ OUT = Path("/reports/healthhub/reports/semanal")
 OUT.mkdir(parents=True, exist_ok=True)
 DSN = os.environ["DATABASE_URL"]
 NIGHT = os.getenv("NIGHTSCOUT_URL", "http://nightscout:1337").rstrip("/")
+LEGACY_REPORTS = Path("/glucose-reports")
 
 # Logging
 logging.basicConfig(
@@ -88,6 +90,39 @@ def renpho_composition(nas_path="/backups/renpho"):
     except Exception as e:
         log.warning(f"No se pudo leer RENPHO: {e}")
     return None
+
+def preserve_legacy_assets():
+    """Expose the clinically richer graphs and latest RENPHO export already kept on NAS.
+
+    Nightscout's former reports service writes these assets to the shared reports
+    volume.  Copying them into OUT keeps the portal self-contained while the
+    unified generator is rebuilt from source control.
+    """
+    assets = {}
+    for key, filename in {
+        "profile": "healthhub-glucose-14d.png",
+        "agp": "healthhub-agp-14d.png",
+        "comparison": "healthhub-compare-14d.png",
+        "daily": "healthhub-daily-14d.png",
+    }.items():
+        source = LEGACY_REPORTS / filename
+        if source.exists():
+            target = OUT / f"legacy-{filename}"
+            shutil.copy2(source, target)
+            assets[key] = target.name
+
+    renpho_dir = LEGACY_REPORTS / "renpho"
+    if renpho_dir.exists():
+        images = sorted(
+            (p for p in renpho_dir.iterdir() if p.suffix.lower() in {".jpg", ".jpeg", ".png"}),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if images:
+            target = OUT / f"renpho-latest{images[0].suffix.lower()}"
+            shutil.copy2(images[0], target)
+            assets["renpho_image"] = target.name
+    return assets
 
 # ============================================================================
 # CÁLCULOS GLUCÉMICOS
@@ -279,7 +314,7 @@ def aggregate_events(events):
 # GENERACIÓN HTML
 # ============================================================================
 
-def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho):
+def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho, legacy_assets):
     """Generar HTML del informe completo."""
     
     # Preparar tabla de actividad
@@ -325,6 +360,27 @@ def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho
             </div>
         </section>
         """
+    elif legacy_assets.get("renpho_image"):
+        renpho_html = f"""
+        <section class="composition">
+            <h2>⚖️ Composición Corporal (RENPHO)</h2>
+            <p>Último informe RENPHO disponible. La extracción estructurada se restaurará al reactivar la sincronización.</p>
+            <img src="{legacy_assets['renpho_image']}" alt="Último informe de composición corporal RENPHO">
+        </section>
+        """
+
+    legacy_glucose_html = ""
+    if legacy_assets:
+        graph = lambda key, title, note: (
+            f'<section><h2>{title}</h2><img src="{legacy_assets[key]}" alt="{title}"><p><small>{note}</small></p></section>'
+            if key in legacy_assets else ""
+        )
+        legacy_glucose_html = "".join([
+            graph("profile", "Perfil glucémico ampliado", "Resumen conservado del generador clínico anterior."),
+            graph("agp", "AGP clínico", "Perfil ambulatorio de glucosa con percentiles."),
+            graph("comparison", "Comparativa de 14 días", "Una curva por día para comparar patrones horarios."),
+            graph("daily", "Glucosa día a día", "Perfiles diarios ampliados del informe anterior."),
+        ])
     
     # Preparar imágenes de perfiles diarios
     profiles_html = ""
@@ -498,6 +554,8 @@ def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho
     </section>
     
     {profiles_html}
+
+    {legacy_glucose_html}
     
     {renpho_html}
     
@@ -562,7 +620,8 @@ def write_report():
     events = health_events_from_db(start)
     
     log.info("Leyendo composición RENPHO...")
-    renpho = renpho_composition()
+    renpho = renpho_composition("/glucose-reports/renpho")
+    legacy_assets = preserve_legacy_assets()
     
     # Calcular métricas
     log.info("Calculando métricas glucémicas...")
@@ -581,7 +640,7 @@ def write_report():
     
     # Generar HTML
     log.info("Generando HTML...")
-    html = generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho)
+    html = generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho, legacy_assets)
     
     # Guardar informe semanal
     week_file = OUT / "healthhub-semanal.html"
