@@ -99,6 +99,21 @@ def glucose_from_nightscout(start, end):
         log.error(f"Error obteniendo glucosa de Nightscout: {e}")
         return []
 
+def glucose_with_clarity_continuity(nightscout_values, start, end):
+    """Completa días sin Nightscout con el histórico privado de Clarity.
+
+    Nightscout tiene prioridad completa para cada día para evitar mezclar dos
+    fuentes en el mismo perfil durante la transición.
+    """
+    by_day = {}
+    for when, value in nightscout_values:
+        by_day.setdefault(when.astimezone(TZ).date(), []).append((when, value))
+    for when, value in clarity_glucose_from_csv():
+        day = when.astimezone(TZ).date()
+        if start.date() <= day <= end.date() and day not in by_day:
+            by_day.setdefault(day, []).append((when, value))
+    return sorted((item for values in by_day.values() for item in values), key=lambda item: item[0])
+
 def health_events_from_db(start):
     """Obtener eventos de salud de PostgreSQL desde fecha."""
     try:
@@ -327,23 +342,28 @@ def agp_data(values):
 # ============================================================================
 
 def plot_agp(values, output_path):
-    """Generar gráfico AGP mejorado."""
+    """Genera un AGP de alto contraste y legible en pantalla."""
     percentiles, x = agp_data(values)
     if percentiles is None:
         return False
     
     try:
-        fig, ax = plt.subplots(figsize=(14, 5), dpi=100)
-        ax.axhspan(70, 180, color="#e7f5eb", alpha=0.7, label="Rango seguro (70-180)")
-        ax.fill_between(x, percentiles[0], percentiles[4], alpha=0.20, color="#3b82f6", label="P5-P95")
-        ax.fill_between(x, percentiles[1], percentiles[3], alpha=0.35, color="#3b82f6", label="P25-P75")
-        ax.plot(x, percentiles[2], lw=2.5, color="#1e40af", label="Mediana (P50)")
+        fig, ax = plt.subplots(figsize=(14, 6.2), dpi=120)
+        ax.set_facecolor("#ffffff")
+        ax.axhspan(70, 180, color="#dcfce7", alpha=0.82, label="Objetivo 70-180")
+        ax.fill_between(x, percentiles[0], percentiles[4], alpha=0.26, color="#93c5fd", label="P5-P95")
+        ax.fill_between(x, percentiles[1], percentiles[3], alpha=0.70, color="#14b8a6", label="P25-P75")
+        ax.plot(x, percentiles[0], lw=1.0, ls="--", color="#2563eb", alpha=0.85)
+        ax.plot(x, percentiles[4], lw=1.0, ls="--", color="#2563eb", alpha=0.85)
+        ax.plot(x, percentiles[2], lw=3.4, color="#0f172a", label="Mediana (P50)")
+        ax.axhline(70, color="#15803d", lw=1.4)
+        ax.axhline(180, color="#c2410c", lw=1.4)
         
         ax.set(xlim=(0, 24), ylim=(40, 300), xlabel="Hora del día", 
                ylabel="mg/dL", title="AGP - Últimos 14 días")
         ax.xaxis.set_major_locator(mdates.HourLocator(interval=2))
-        ax.grid(alpha=0.2)
-        ax.legend(loc="upper right", fontsize=9)
+        ax.grid(alpha=0.28, color="#94a3b8", linewidth=0.7)
+        ax.legend(loc="upper right", fontsize=10, frameon=True, facecolor="white", framealpha=0.96)
         
         fig.tight_layout()
         fig.savefig(output_path, dpi=100, bbox_inches='tight')
@@ -378,15 +398,17 @@ def plot_daily_profiles(values, events, output_dir):
     # Newest first, for the whole reporting period.
     for day in sorted(by_day.keys(), reverse=True)[:14]:
         try:
-            fig, ax = plt.subplots(figsize=(12, 4), dpi=100)
+            fig, ax = plt.subplots(figsize=(14, 6.2), dpi=120)
             
             # Datos del día
             times = [t for t, _ in by_day[day]]
             glu = [v for _, v in by_day[day]]
             
-            ax.axhspan(70, 180, color="#e7f5eb", alpha=0.7)
-            ax.plot(times, glu, marker='o', lw=1.5, markersize=4, color="#1e40af")
-            ax.fill_between(times, 40, glu, alpha=0.15, color="#3b82f6")
+            ax.axhspan(70, 180, color="#dcfce7", alpha=0.78)
+            ax.axhline(70, color="#15803d", lw=1.2)
+            ax.axhline(180, color="#c2410c", lw=1.2)
+            ax.plot(times, glu, marker='o', lw=2.2, markersize=3.2, color="#0f3b8f")
+            ax.fill_between(times, 40, glu, alpha=0.13, color="#60a5fa")
             
             # Marcar insulina (rojo) y entrenamientos (violeta). Además de
             # la línea vertical se muestra una etiqueta, para que el evento
@@ -421,7 +443,7 @@ def plot_daily_profiles(values, events, output_dir):
                    ylim=(40, 300), ylabel="mg/dL",
                    title=f"Perfil diario - {day.strftime('%d/%m/%Y')}")
             ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
-            ax.grid(alpha=0.2)
+            ax.grid(alpha=0.28, color="#94a3b8", linewidth=0.7)
             
             filename = f"daily-{day.isoformat()}.png"
             filepath = output_dir / filename
@@ -556,10 +578,10 @@ def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho
     # Preparar imágenes de perfiles diarios
     profiles_html = ""
     if daily_profiles:
-        profiles_html = "<section class='daily-profiles'><h2>📊 Perfiles Diarios</h2>"
+        profiles_html = "<section class='daily-profiles'><h2>📊 Perfiles Diarios - últimos 14 días</h2><div class='profile-list'>"
         for img in daily_profiles:
             profiles_html += f'<figure><img src="{img}" alt="Perfil diario"></figure>'
-        profiles_html += "</section>"
+        profiles_html += "</div></section>"
     
     html = f"""<!DOCTYPE html>
 <html lang="es">
@@ -639,17 +661,14 @@ def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho
         }}
         tr:hover {{ background: #fafafa; }}
         
-        .daily-profiles {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 1.5rem;
-        }}
+        .profile-list {{ display: grid; grid-template-columns: 1fr; gap: 1.5rem; }}
         .daily-profiles figure {{
             background: white;
-            padding: 1rem;
-            border-radius: 8px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            padding: 1.25rem;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(15,23,42,0.10);
         }}
+        .daily-profiles figure img {{ width: 100%; display: block; }}
         
         .alert {{
             background: #fef2f2;
@@ -787,7 +806,9 @@ def write_report():
     
     # Obtener datos
     log.info("Obteniendo datos de Nightscout...")
-    glucose_data = glucose_from_nightscout(start, end)
+    nightscout_data = glucose_from_nightscout(start, end)
+    glucose_data = glucose_with_clarity_continuity(nightscout_data, start, end)
+    log.info("Continuidad de glucosa: %s lecturas Nightscout, %s lecturas combinadas", len(nightscout_data), len(glucose_data))
     
     log.info("Obteniendo eventos de base de datos...")
     events = health_events_from_db(start)
