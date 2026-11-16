@@ -50,7 +50,7 @@ async def upload_clarity(csv_file: UploadFile = File(...)):
     temporary.replace(CLARITY_EXPORT)
     REFRESH_REQUEST.touch()
     return RedirectResponse("/", 303)
-@app.get("/report/{name}")
+@app.get("/report/{name:path}")
 def report(name:str):
     path=(REPORTS/name).resolve()
     if REPORTS not in path.parents or not path.is_file(): return HTMLResponse("Informe aún no generado",404)
