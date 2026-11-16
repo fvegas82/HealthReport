@@ -4,6 +4,7 @@ Health Report Generator - Informe integrado de 14 días
 Genera HTML con glucosa, actividad, composición corporal e insulina.
 """
 
+import csv
 import hashlib
 import json
 import os
@@ -37,6 +38,8 @@ DSN = os.environ["DATABASE_URL"]
 NIGHT = os.getenv("NIGHTSCOUT_URL", "http://nightscout:1337").rstrip("/")
 LEGACY_REPORTS = Path("/glucose-reports")
 RENPHO_AUDIT_DIR = Path("/reports/healthhub/reports/renpho")
+CLARITY_DIR = Path("/reports/healthhub/clarity")
+CLARITY_EXPORT = CLARITY_DIR / "clarity-export.csv"
 
 # Resultado validado de la lectura OCR histórica que se conservó como imagen en
 # el NAS. Se usa una única vez para reconstruir el fichero auditable
@@ -109,6 +112,60 @@ def health_events_from_db(start):
     except Exception as e:
         log.error(f"Error obteniendo eventos de base de datos: {e}")
         return []
+
+def clarity_glucose_from_csv():
+    """Carga únicamente las lecturas EGV de la exportación privada de Clarity."""
+    if not CLARITY_EXPORT.exists():
+        return []
+    try:
+        readings = []
+        with CLARITY_EXPORT.open("r", encoding="utf-8-sig", newline="") as stream:
+            for row in csv.DictReader(stream):
+                if row.get("Event Type") != "EGV":
+                    continue
+                timestamp = row.get("Timestamp (YYYY-MM-DDThh:mm:ss)", "")
+                glucose = row.get("Glucose Value (mg/dL)", "")
+                if not timestamp or not glucose:
+                    continue
+                when = datetime.fromisoformat(timestamp).replace(tzinfo=TZ)
+                readings.append((when, float(glucose)))
+        return sorted(readings, key=lambda item: item[0])
+    except Exception as e:
+        log.error(f"Error leyendo el histórico de Clarity: {e}")
+        return []
+
+def write_clarity_history():
+    """Genera una página histórica local a partir del CSV privado de Clarity."""
+    values = clarity_glucose_from_csv()
+    if not values:
+        return None
+
+    history_dir = OUT / "historico-clarity"
+    history_dir.mkdir(parents=True, exist_ok=True)
+    plot_agp(values, history_dir / "agp.png")
+    daily_profiles = plot_daily_profiles(values, [], history_dir)
+    start_day = values[0][0].astimezone(TZ).date().strftime("%d/%m/%Y")
+    end_day = values[-1][0].astimezone(TZ).date().strftime("%d/%m/%Y")
+    metrics = calculate_glucose_metrics(values)
+    profile_images = "".join(
+        f'<figure><img src="historico-clarity/{name}" alt="Perfil diario Clarity"></figure>'
+        for name in daily_profiles
+    )
+    html = f"""<!doctype html><html lang="es"><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Histórico Clarity</title><style>
+    body{{font-family:system-ui;margin:0;background:#f7fafc;color:#17243a}}main{{max-width:1280px;margin:auto;padding:24px}}
+    section{{background:#fff;border-radius:14px;padding:20px;margin:16px 0;box-shadow:0 2px 10px #102a4318}}
+    .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}}.card{{border:1px solid #d9e2ec;border-radius:10px;padding:12px}}
+    img{{max-width:100%;height:auto}}.profiles figure{{margin:18px 0}}a{{color:#075985;font-weight:700}}
+    </style><main><a href="healthhub-semanal.html">← Volver al informe actual</a>
+    <section><h1>Histórico Clarity</h1><p>{start_day} – {end_day}. Datos previos al cambio a Nightscout; fuente privada, no subida a GitHub.</p>
+    <div class="cards"><div class="card"><b>Media</b><h2>{metrics['mean']:.0f} mg/dL</h2></div><div class="card"><b>Variabilidad</b><h2>{metrics['cv']:.1f}%</h2></div><div class="card"><b>En rango</b><h2>{metrics['tir']:.1f}%</h2></div><div class="card"><b>Lecturas</b><h2>{metrics['count']}</h2></div></div></section>
+    <section><h2>AGP histórico</h2><img src="historico-clarity/agp.png" alt="AGP histórico Clarity"></section>
+    <section class="profiles"><h2>Perfiles diarios</h2>{profile_images}</section></main></html>"""
+    filename = "clarity-historico.html"
+    (OUT / filename).write_text(html, encoding="utf-8")
+    return filename
 
 def _latest_renpho_image():
     """Devuelve la exportación RENPHO más reciente, solo como fuente OCR."""
@@ -426,7 +483,7 @@ def aggregate_events(events):
 # GENERACIÓN HTML
 # ============================================================================
 
-def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho, legacy_assets):
+def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho, legacy_assets, clarity_history=None):
     """Generar HTML del informe completo."""
     
     # Preparar tabla de actividad
@@ -489,6 +546,11 @@ def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho
     legacy_glucose_html = "".join([
         graph("comparison", "Comparativa de 14 días", "Una curva por día para comparar patrones horarios."),
     ])
+    clarity_history_html = (
+        '<section><h2>Histórico Clarity</h2><p>Periodo previo al cambio de aplicación: '
+        f'<a href="{clarity_history}">abrir los 14 días históricos</a>.</p></section>'
+        if clarity_history else ""
+    )
     
     # Preparar imágenes de perfiles diarios
     profiles_html = ""
@@ -664,6 +726,8 @@ def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho
     {legacy_glucose_html}
 
     {profiles_html}
+
+    {clarity_history_html}
     
     {renpho_html}
     
@@ -730,6 +794,7 @@ def write_report():
     log.info("Leyendo composición RENPHO...")
     renpho = renpho_composition()
     legacy_assets = preserve_legacy_assets()
+    clarity_history = write_clarity_history()
     
     # Calcular métricas
     log.info("Calculando métricas glucémicas...")
@@ -748,7 +813,7 @@ def write_report():
     
     # Generar HTML
     log.info("Generando HTML...")
-    html = generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho, legacy_assets)
+    html = generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho, legacy_assets, clarity_history)
     
     # Guardar informe semanal
     week_file = OUT / "healthhub-semanal.html"

@@ -2,11 +2,12 @@ import hashlib, json, os
 from datetime import datetime, timezone
 from pathlib import Path
 import psycopg
-from fastapi import FastAPI, Form
+from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 app=FastAPI(docs_url=None,redoc_url=None); DSN=os.environ["DATABASE_URL"]; REPORTS=Path("/reports/healthhub/reports/semanal")
 REFRESH_REQUEST = REPORTS.parent / ".refresh-request"
+CLARITY_EXPORT = Path("/reports/healthhub/clarity/clarity-export.csv")
 def event(kind, occurred_at, payload):
     record={"source":"portal","event_type":kind,"occurred_at":occurred_at,"payload":payload}
     raw=json.dumps(record,sort_keys=True,separators=(",",":")); digest=hashlib.sha256(raw.encode()).hexdigest()
@@ -23,6 +24,7 @@ def index():
     <div class="bar"><b>Health Report</b><span>Acceso personal protegido</span><a href="/report/healthhub-semanal.html" style="color:#fff">Abrir informe</a></div><main><div class="forms">
     <form method="post" action="/insulin"><h2>Registrar dosis de insulina</h2><label>Fecha y hora<input required type="datetime-local" name="at" value="{now}"></label><label>Unidades<input required type="number" step="0.1" min="0.1" name="units" placeholder="Ej. 4.5"></label><label>Tipo<select name="kind"><option value="rapida">Rapida</option><option value="basal">Basal</option><option value="otra">Otra</option></select></label><button>Guardar dosis y actualizar informe</button></form>
     <form method="post" action="/workout"><h2>Registrar entrenamiento</h2><label>Inicio<input required type="datetime-local" name="at" value="{now}"></label><label>Duracion (minutos)<input required type="number" min="1" name="minutes" placeholder="Ej. 45"></label><label>Intensidad<select name="intensity"><option value="ligera">Ligera</option><option value="media" selected>Media</option><option value="alta">Alta</option></select></label><button>Guardar entrenamiento y actualizar informe</button></form>
+    <form method="post" action="/clarity/upload" enctype="multipart/form-data"><h2>Importar histórico Clarity</h2><label>Exportación CSV<input required type="file" accept=".csv,text/csv" name="csv_file"></label><button>Guardar histórico y generar informe</button></form>
     </div><p><small>Al guardar, el informe se regenera automáticamente y los eventos se marcan en los perfiles de glucosa.</small></p><iframe src="/report/healthhub-semanal.html" title="Informe integrado"></iframe></main></html>'''
 @app.post("/insulin")
 def insulin(at:str=Form(...),units:float=Form(...),kind:str=Form(...)):
@@ -30,6 +32,24 @@ def insulin(at:str=Form(...),units:float=Form(...),kind:str=Form(...)):
 @app.post("/workout")
 def workout(at:str=Form(...),minutes:int=Form(...),intensity:str=Form(...)):
     event("ExerciseSessionRecord",datetime.fromisoformat(at).astimezone().isoformat(),{"duration_minutes":minutes,"intensity":intensity}); return RedirectResponse("/",303)
+
+@app.post("/clarity/upload")
+async def upload_clarity(csv_file: UploadFile = File(...)):
+    content = await csv_file.read()
+    if len(content) > 5 * 1024 * 1024:
+        return HTMLResponse("El CSV supera el límite de 5 MB.", 413)
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return HTMLResponse("El archivo debe ser un CSV UTF-8 exportado por Clarity.", 400)
+    if "Timestamp (YYYY-MM-DDThh:mm:ss)" not in text or "Glucose Value (mg/dL)" not in text:
+        return HTMLResponse("El archivo no parece una exportación de Clarity válida.", 400)
+    CLARITY_EXPORT.parent.mkdir(parents=True, exist_ok=True)
+    temporary = CLARITY_EXPORT.with_suffix(".tmp")
+    temporary.write_text(text, encoding="utf-8")
+    temporary.replace(CLARITY_EXPORT)
+    REFRESH_REQUEST.touch()
+    return RedirectResponse("/", 303)
 @app.get("/report/{name}")
 def report(name:str):
     path=(REPORTS/name).resolve()
