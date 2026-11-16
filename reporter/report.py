@@ -116,8 +116,19 @@ def glucose_with_clarity_continuity(nightscout_values, start, end):
         if start.date() <= day <= end.date():
             clarity_by_day.setdefault(day, []).append((when, value))
     for day, clarity_values in clarity_by_day.items():
-        if len(by_day.get(day, [])) < 72:
-            by_day[day] = clarity_values
+        nightscout_day = by_day.get(day, [])
+        if len(nightscout_day) < 72:
+            # Clarity es la referencia histórica durante la transición. No
+            # obstante, conserva una lectura de Nightscout cuando Clarity no
+            # tiene nada alrededor: así un corte parcial (como la mañana del
+            # 13/11) no deja un hueco artificial en el perfil diario.
+            clarity_times = [when for when, _ in clarity_values]
+            additional = [
+                item for item in nightscout_day
+                if not any(abs((item[0] - clarity_time).total_seconds()) <= 10 * 60
+                               for clarity_time in clarity_times)
+            ]
+            by_day[day] = sorted(clarity_values + additional, key=lambda item: item[0])
     return sorted((item for values in by_day.values() for item in values), key=lambda item: item[0])
 
 def health_events_from_db(start):
