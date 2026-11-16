@@ -366,6 +366,16 @@ def agp_data(values):
 # GRÁFICOS
 # ============================================================================
 
+def label_reference_lines(ax):
+    """Muestra el umbral junto a cada línea de rango, sin depender del eje."""
+    for value, color in ((70, "#15803d"), (180, "#c2410c")):
+        ax.annotate(
+            f"{value} mg/dL", xy=(1, value), xycoords=("axes fraction", "data"),
+            xytext=(7, 0), textcoords="offset points", va="center", ha="left",
+            fontsize=9, fontweight="bold", color=color, clip_on=False,
+            bbox={"boxstyle": "round,pad=0.18", "fc": "white", "ec": "none", "alpha": 0.92},
+        )
+
 def plot_agp(values, output_path):
     """Genera un AGP de alto contraste y legible en pantalla."""
     percentiles, x = agp_data(values)
@@ -385,6 +395,7 @@ def plot_agp(values, output_path):
         ax.plot(x, percentiles[2], lw=3.4, color="#0f172a", label="Mediana (P50)")
         ax.axhline(70, color="#15803d", lw=1.4)
         ax.axhline(180, color="#c2410c", lw=1.4)
+        label_reference_lines(ax)
         
         ax.set(xlim=(0, 24), ylim=(40, 300), xlabel="Hora del día", 
                ylabel="mg/dL", title="AGP - Últimos 14 días")
@@ -437,6 +448,7 @@ def plot_daily_profiles(values, events, output_dir):
             ax.axhspan(70, 180, color="#dcfce7", alpha=0.78)
             ax.axhline(70, color="#15803d", lw=1.2)
             ax.axhline(180, color="#c2410c", lw=1.2)
+            label_reference_lines(ax)
             ax.plot(times, glu, marker='o', lw=2.2, markersize=3.2, color="#0f3b8f")
             ax.fill_between(times, 40, glu, alpha=0.13, color="#60a5fa")
             
