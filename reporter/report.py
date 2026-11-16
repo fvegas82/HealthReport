@@ -102,16 +102,21 @@ def glucose_from_nightscout(start, end):
 def glucose_with_clarity_continuity(nightscout_values, start, end):
     """Completa días sin Nightscout con el histórico privado de Clarity.
 
-    Nightscout tiene prioridad completa para cada día para evitar mezclar dos
-    fuentes en el mismo perfil durante la transición.
+    Nightscout tiene prioridad cuando hay cobertura suficiente. Si solo hay
+    lecturas aisladas durante la transición, se usa el día completo de
+    Clarity: así se evitan perfiles diarios prácticamente vacíos.
     """
     by_day = {}
     for when, value in nightscout_values:
         by_day.setdefault(when.astimezone(TZ).date(), []).append((when, value))
+    clarity_by_day = {}
     for when, value in clarity_glucose_from_csv():
         day = when.astimezone(TZ).date()
-        if start.date() <= day <= end.date() and day not in by_day:
-            by_day.setdefault(day, []).append((when, value))
+        if start.date() <= day <= end.date():
+            clarity_by_day.setdefault(day, []).append((when, value))
+    for day, clarity_values in clarity_by_day.items():
+        if len(by_day.get(day, [])) < 72:
+            by_day[day] = clarity_values
     return sorted((item for values in by_day.values() for item in values), key=lambda item: item[0])
 
 def health_events_from_db(start):
