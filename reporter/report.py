@@ -449,9 +449,15 @@ def plot_daily_profiles(values, events, output_dir):
                 for evt_type, when, payload in events_by_day[day]:
                     if evt_type == "InsulinDoseRecord":
                         units = payload.get("units", "?")
+                        insulin_type = str(payload.get("type", "otra")).strip().lower()
+                        insulin_label = {
+                            "rapida": "rapida",
+                            "basal": "basal",
+                            "otra": "otra",
+                        }.get(insulin_type, insulin_type or "otra")
                         ax.axvline(when, color="#dc2626", linestyle="--", alpha=0.9, linewidth=1.8)
                         ax.annotate(
-                            f"Insulina {units}U", xy=(when, 290 - 24 * (insulin_markers % 3)), xytext=(-4, -3),
+                            f"Insulina {units}U - {insulin_label}", xy=(when, 290 - 24 * (insulin_markers % 3)), xytext=(-4, -3),
                             textcoords="offset points", rotation=0, va="top", ha="right",
                             fontsize=8, color="#991b1b", fontweight="bold",
                             bbox={"boxstyle": "round,pad=0.2", "fc": "#fee2e2", "ec": "none", "alpha": 0.9},
