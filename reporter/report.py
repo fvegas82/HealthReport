@@ -519,6 +519,9 @@ def aggregate_events(events):
 
 def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho, legacy_assets, clarity_history=None):
     """Generar HTML del informe completo."""
+    # Las rutas de las imágenes diarias se reutilizan. Esta versión evita que
+    # el navegador muestre una copia en caché después de actualizar el informe.
+    asset_version = int(time.time())
     
     # Preparar tabla de actividad
     activity_rows = ""
@@ -574,7 +577,7 @@ def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho
 
     legacy_glucose_html = ""
     graph = lambda key, title, note: (
-        f'<section><h2>{title}</h2><img src="{legacy_assets[key]}" alt="{title}">'
+        f'<section><h2>{title}</h2><img src="{legacy_assets[key]}?v={asset_version}" alt="{title}">'
         f'<p><small>{note}</small></p></section>' if key in legacy_assets else ""
     )
     legacy_glucose_html = "".join([
@@ -591,7 +594,7 @@ def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho
     if daily_profiles:
         profiles_html = "<section class='daily-profiles'><h2>📊 Perfiles Diarios - últimos 14 días</h2><div class='profile-list'>"
         for img in daily_profiles:
-            profiles_html += f'<figure><img src="{img}" alt="Perfil diario"></figure>'
+            profiles_html += f'<figure><img src="{img}?v={asset_version}" alt="Perfil diario"></figure>'
         profiles_html += "</div></section>"
     
     html = f"""<!DOCTYPE html>
@@ -750,7 +753,7 @@ def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho
     
     <section class="agp-section">
         <h2>📉 AGP - Arbol de Glicemia Promedio</h2>
-        <img src="agp.png" alt="Gráfico AGP de glucosa">
+        <img src="agp.png?v={asset_version}" alt="Gráfico AGP de glucosa">
         <p><small>Percentiles de glucosa por hora (últimos 14 días). P5-P95 (claro), P25-P75 (oscuro), P50 (línea central).</small></p>
     </section>
     
