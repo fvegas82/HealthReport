@@ -147,8 +147,9 @@ def write_clarity_history():
     start_day = values[0][0].astimezone(TZ).date().strftime("%d/%m/%Y")
     end_day = values[-1][0].astimezone(TZ).date().strftime("%d/%m/%Y")
     metrics = calculate_glucose_metrics(values)
+    asset_version = int(time.time())
     profile_images = "".join(
-        f'<figure><img src="historico-clarity/{name}" alt="Perfil diario Clarity"></figure>'
+        f'<figure><img src="historico-clarity/{name}?v={asset_version}" alt="Perfil diario Clarity"></figure>'
         for name in daily_profiles
     )
     html = f"""<!doctype html><html lang="es"><meta charset="utf-8">
@@ -161,7 +162,7 @@ def write_clarity_history():
     </style><main><a href="healthhub-semanal.html">← Volver al informe actual</a>
     <section><h1>Histórico Clarity</h1><p>{start_day} – {end_day}. Datos previos al cambio a Nightscout; fuente privada, no subida a GitHub.</p>
     <div class="cards"><div class="card"><b>Media</b><h2>{metrics['mean']:.0f} mg/dL</h2></div><div class="card"><b>Variabilidad</b><h2>{metrics['cv']:.1f}%</h2></div><div class="card"><b>En rango</b><h2>{metrics['tir']:.1f}%</h2></div><div class="card"><b>Lecturas</b><h2>{metrics['count']}</h2></div></div></section>
-    <section><h2>AGP histórico</h2><img src="historico-clarity/agp.png" alt="AGP histórico Clarity"></section>
+    <section><h2>AGP histórico</h2><img src="historico-clarity/agp.png?v={asset_version}" alt="AGP histórico Clarity"></section>
     <section class="profiles"><h2>Perfiles diarios</h2>{profile_images}</section></main></html>"""
     filename = "clarity-historico.html"
     (OUT / filename).write_text(html, encoding="utf-8")
