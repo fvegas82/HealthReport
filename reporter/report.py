@@ -115,9 +115,17 @@ def glucose_with_clarity_continuity(nightscout_values, start, end):
         day = when.astimezone(TZ).date()
         if start.date() <= day <= end.date():
             clarity_by_day.setdefault(day, []).append((when, value))
+    def has_complete_nightscout_coverage(readings):
+        """Una cantidad alta no implica un día completo: se exige continuidad."""
+        if len(readings) < 180:
+            return False
+        ordered = sorted(when for when, _ in readings)
+        covered_seconds = (ordered[-1] - ordered[0]).total_seconds()
+        return covered_seconds >= 20 * 60 * 60
+
     for day, clarity_values in clarity_by_day.items():
         nightscout_day = by_day.get(day, [])
-        if len(nightscout_day) < 72:
+        if not has_complete_nightscout_coverage(nightscout_day):
             # Clarity es la referencia histórica durante la transición. No
             # obstante, conserva una lectura de Nightscout cuando Clarity no
             # tiene nada alrededor: así un corte parcial (como la mañana del
