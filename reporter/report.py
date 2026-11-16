@@ -20,6 +20,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import matplotlib.ticker as mticker
 import numpy as np
 import psycopg
 
@@ -353,7 +354,9 @@ def plot_agp(values, output_path):
         return False
     
     try:
-        fig, ax = plt.subplots(figsize=(14, 6.2), dpi=120)
+        # El AGP debe leerse igual de bien que los perfiles diarios: una
+        # proporción alta y una escala temporal explícita, no fechas.
+        fig, ax = plt.subplots(figsize=(14, 7.2), dpi=120)
         ax.set_facecolor("#ffffff")
         ax.axhspan(70, 180, color="#dcfce7", alpha=0.82, label="Objetivo 70-180")
         ax.fill_between(x, percentiles[0], percentiles[4], alpha=0.26, color="#93c5fd", label="P5-P95")
@@ -366,9 +369,12 @@ def plot_agp(values, output_path):
         
         ax.set(xlim=(0, 24), ylim=(40, 300), xlabel="Hora del día", 
                ylabel="mg/dL", title="AGP - Últimos 14 días")
-        ax.xaxis.set_major_locator(mdates.HourLocator(interval=2))
-        ax.grid(alpha=0.28, color="#94a3b8", linewidth=0.7)
-        ax.legend(loc="upper right", fontsize=10, frameon=True, facecolor="white", framealpha=0.96)
+        ax.xaxis.set_major_locator(mticker.MultipleLocator(2))
+        ax.xaxis.set_minor_locator(mticker.MultipleLocator(1))
+        ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda hour, _: f"{int(hour):02d}:00"))
+        ax.grid(which="major", alpha=0.34, color="#94a3b8", linewidth=0.8)
+        ax.grid(which="minor", axis="x", alpha=0.16, color="#cbd5e1", linewidth=0.5)
+        ax.legend(loc="upper right", fontsize=11, frameon=True, facecolor="white", framealpha=0.98)
         
         fig.tight_layout()
         fig.savefig(output_path, dpi=100, bbox_inches='tight')
@@ -403,7 +409,7 @@ def plot_daily_profiles(values, events, output_dir):
     # Newest first, for the whole reporting period.
     for day in sorted(by_day.keys(), reverse=True)[:14]:
         try:
-            fig, ax = plt.subplots(figsize=(14, 6.2), dpi=120)
+            fig, ax = plt.subplots(figsize=(14, 7.2), dpi=120)
             
             # Datos del día
             times = [t for t, _ in by_day[day]]
