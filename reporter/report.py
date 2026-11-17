@@ -641,6 +641,64 @@ def plot_daily_profiles(values, events, output_dir, max_days=14):
     
     return saved
 
+def plot_hour_week_heatmap(values, output_path):
+    """Mapa de medias por hora y dia de la semana para periodos largos."""
+    buckets = [[[] for _ in range(24)] for _ in range(7)]
+    for when, value in values:
+        local = when.astimezone(TZ)
+        buckets[local.weekday()][local.hour].append(value)
+    matrix = np.array([
+        [np.mean(cell) if cell else np.nan for cell in weekday]
+        for weekday in buckets
+    ])
+    if np.isnan(matrix).all():
+        output_path.unlink(missing_ok=True)
+        return None
+    fig, ax = plt.subplots(figsize=(14, 5.8), dpi=120)
+    image = ax.imshow(np.ma.masked_invalid(matrix), aspect="auto", cmap="RdYlGn_r", vmin=70, vmax=220)
+    ax.set_xticks(range(24))
+    ax.set_xticklabels([f"{hour:02d}" for hour in range(24)], fontsize=8)
+    ax.set_yticks(range(7))
+    ax.set_yticklabels(["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"])
+    ax.set_xlabel("Hora del dia")
+    ax.set_title("Patron horario por dia de la semana - media de glucosa", loc="left", fontweight="bold")
+    for day in range(7):
+        for hour in range(24):
+            if not np.isnan(matrix[day, hour]):
+                ax.text(hour, day, f"{matrix[day, hour]:.0f}", ha="center", va="center", fontsize=6.5, color="#17243a")
+    colorbar = fig.colorbar(image, ax=ax, pad=0.015)
+    colorbar.set_label("Media mg/dL")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    return output_path.name
+
+def long_window_insights(values, end, period_days=30):
+    """Resume tendencia semanal y estabilidad nocturna sin inferir causalidad."""
+    weeks = []
+    for offset in range(3, -1, -1):
+        week_end = end - timedelta(days=offset * 7)
+        week_start = week_end - timedelta(days=7)
+        week_values = [(when, value) for when, value in values if week_start <= when < week_end]
+        metrics = calculate_glucose_metrics(week_values, period_days=7)
+        weeks.append({
+            "label": f"{week_start.strftime('%d/%m')} - {week_end.strftime('%d/%m')}",
+            "metrics": metrics,
+        })
+    night_values = [(when, value) for when, value in values if 0 <= when.astimezone(TZ).hour < 6]
+    if night_values:
+        readings = np.array([value for _, value in night_values])
+        night = {
+            "mean": float(np.mean(readings)),
+            "cv": float(np.std(readings) / np.mean(readings) * 100) if np.mean(readings) else 0,
+            "tir": float(np.mean((readings >= 70) & (readings <= 180)) * 100),
+            "hypo": float(np.mean(readings < 70) * 100),
+            "days": len({when.astimezone(TZ).date() for when, _ in night_values}),
+        }
+    else:
+        night = None
+    return {"weeks": weeks, "night": night, "period_days": period_days}
+
 # ============================================================================
 # PROCESAMIENTO DE EVENTOS
 # ============================================================================
@@ -691,7 +749,7 @@ def aggregate_events(events):
 # GENERACIÓN HTML
 # ============================================================================
 
-def generate_html_report(end, start, metrics, previous_metrics, daily_profiles, aggregated, renpho, renpho_chart, legacy_assets, clarity_history=None, period_days=14, asset_prefix="", include_legacy=True):
+def generate_html_report(end, start, metrics, previous_metrics, daily_profiles, aggregated, renpho, renpho_chart, legacy_assets, clarity_history=None, period_days=14, asset_prefix="", include_legacy=True, long_window=None):
     """Generar HTML del informe completo."""
     # Las rutas de las imágenes diarias se reutilizan. Esta versión evita que
     # el navegador muestre una copia en caché después de actualizar el informe.
@@ -754,6 +812,34 @@ def generate_html_report(end, start, metrics, previous_metrics, daily_profiles, 
             </table>
         </section>
     """ if band_rows else ""
+
+    long_window_html = ""
+    if long_window:
+        weekly_rows = "".join(
+            f"<tr><td><strong>{week['label']}</strong></td><td>{week['metrics']['mean']:.0f}</td><td>{week['metrics']['tir']:.1f}%</td><td>{week['metrics']['cv']:.1f}%</td><td>{week['metrics']['coverage']:.1f}%</td></tr>"
+            for week in long_window["weeks"]
+        )
+        night = long_window.get("night")
+        night_html = (
+            f"<div class='cards compact-cards'><div class='card'><b>Media nocturna</b><h3>{night['mean']:.0f} mg/dL</h3><small>00:00 - 06:00, {night['days']} dias con datos.</small></div>"
+            f"<div class='card'><b>Variabilidad nocturna</b><h3>{night['cv']:.1f}%</h3><small>CV de lecturas nocturnas.</small></div>"
+            f"<div class='card'><b>En rango nocturno</b><h3>{night['tir']:.1f}%</h3><small>Rango 70 - 180 mg/dL.</small></div>"
+            f"<div class='card'><b>Bajo 70 nocturno</b><h3>{night['hypo']:.1f}%</h3><small>Lecturas, no episodios.</small></div></div>"
+        ) if night else "<p class='section-note'>Sin lecturas nocturnas suficientes para resumir este periodo.</p>"
+        heatmap = long_window.get("heatmap")
+        heatmap_html = (
+            f"<img src=\"{asset(heatmap)}?v={asset_version}\" alt=\"Patron horario por dia de la semana\"><p class='section-note'>Cada celda muestra la media de glucosa disponible; una celda vacia indica falta de datos.</p>"
+            if heatmap else "<p class='section-note'>No hay suficientes datos para el patron horario.</p>"
+        )
+        long_window_html = f"""
+        <section class="trend-section">
+            <h2>Tendencia de 4 semanas</h2>
+            <p class="section-note">Resumen descriptivo de cuatro bloques consecutivos de siete dias.</p>
+            <table><tr><th>Semana</th><th>Media (mg/dL)</th><th>En rango</th><th>CV</th><th>Cobertura</th></tr>{weekly_rows}</table>
+        </section>
+        <section class="night-section"><h2>Estabilidad nocturna</h2>{night_html}</section>
+        <section class="heatmap-section"><h2>Patron horario semanal</h2>{heatmap_html}</section>
+        """
     
     # Preparar sección RENPHO
     renpho_html = ""
@@ -1011,6 +1097,8 @@ def generate_html_report(end, start, metrics, previous_metrics, daily_profiles, 
     {comparison_html}
 
     {band_html}
+
+    {long_window_html}
     
     <section class="agp-section">
         <h2>📉 AGP - Arbol de Glicemia Promedio</h2>
@@ -1152,13 +1240,15 @@ def write_report():
     monthly_assets.mkdir(parents=True, exist_ok=True)
     plot_agp(monthly_glucose, monthly_assets / "agp.png", period_days=monthly_days)
     monthly_profiles = plot_daily_profiles(monthly_glucose, monthly_events, monthly_assets, max_days=monthly_days)
+    monthly_insights = long_window_insights(monthly_glucose, end, period_days=monthly_days)
+    monthly_insights["heatmap"] = plot_hour_week_heatmap(monthly_glucose, monthly_assets / "pattern-week-hour.png")
     monthly_html = generate_html_report(
         end, monthly_start,
         calculate_glucose_metrics(monthly_glucose, period_days=monthly_days),
         calculate_glucose_metrics(monthly_previous_glucose, period_days=monthly_days),
         monthly_profiles, aggregate_events(monthly_events), renpho, renpho_chart,
         legacy_assets, clarity_history, period_days=monthly_days,
-        asset_prefix="mensual/", include_legacy=False,
+        asset_prefix="mensual/", include_legacy=False, long_window=monthly_insights,
     )
     monthly_file = OUT / "healthhub-mensual.html"
     monthly_file.write_text(monthly_html, encoding="utf-8")
