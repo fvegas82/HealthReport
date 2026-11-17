@@ -319,13 +319,22 @@ def preserve_legacy_assets():
 # ============================================================================
 
 def calculate_glucose_metrics(values):
-    """Calcular métricas de glucosa."""
+    """Calcula las metricas descriptivas de CGM para el informe.
+
+    Los porcentajes se calculan sobre las lecturas disponibles; la cobertura
+    indica por separado cuanto del periodo de 14 dias tiene datos. Asi no se
+    confunde una mejora aparente con un periodo incompleto.
+    """
     if not values:
         return {
             "mean": 0, "std": 0, "cv": 0, "tir": 0,
-            "hypo": 0, "hyper": 0, "count": 0
+            "hypo": 0, "hyper": 0, "very_hypo": 0, "very_hyper": 0,
+            "tight_range": 0, "gmi": 0, "count": 0,
+            "coverage": 0, "days_with_data": 0,
+            "low_events": {"count": 0, "minutes": 0, "longest": 0},
+            "time_bands": [],
         }
-    
+
     gs = np.array([v for _, v in values])
     mean = float(np.mean(gs))
     std = float(np.std(gs))
@@ -333,7 +342,62 @@ def calculate_glucose_metrics(values):
     tir = float(np.mean((gs >= 70) & (gs <= 180)) * 100)
     hypo = float(np.mean(gs < 70) * 100)
     hyper = float(np.mean(gs > 180) * 100)
-    
+    very_hypo = float(np.mean(gs < 54) * 100)
+    very_hyper = float(np.mean(gs > 250) * 100)
+    tight_range = float(np.mean((gs >= 70) & (gs <= 140)) * 100)
+
+    # Cobertura: una lectura por cada bloque de cinco minutos. El valor no se
+    # usa para decisiones clinicas; solo califica la fiabilidad del resumen.
+    period_seconds = 14 * 24 * 60 * 60
+    slots = {
+        int((when.astimezone(TZ).timestamp()) // 300)
+        for when, _ in values
+    }
+    coverage = min(100.0, len(slots) / (period_seconds / 300) * 100)
+    days_with_data = len({when.astimezone(TZ).date() for when, _ in values})
+
+    def low_episode_summary():
+        episodes = []
+        started = previous = None
+        for when, value in values:
+            local = when.astimezone(TZ)
+            is_low = value < 70
+            contiguous = previous and (local - previous).total_seconds() <= 15 * 60
+            if is_low:
+                if started is None or not contiguous:
+                    if started is not None:
+                        episodes.append((started, previous))
+                    started = local
+                previous = local
+            elif started is not None:
+                episodes.append((started, previous))
+                started = previous = None
+        if started is not None:
+            episodes.append((started, previous))
+        durations = [max(5, round((last - first).total_seconds() / 60) + 5) for first, last in episodes]
+        return {
+            "count": len(durations),
+            "minutes": sum(durations),
+            "longest": max(durations, default=0),
+        }
+
+    time_bands = []
+    for label, first_hour, last_hour in [
+        ("Noche (00-06)", 0, 6),
+        ("Manana (06-12)", 6, 12),
+        ("Tarde (12-18)", 12, 18),
+        ("Noche (18-24)", 18, 24),
+    ]:
+        band = np.array([value for when, value in values if first_hour <= when.astimezone(TZ).hour < last_hour])
+        if len(band):
+            time_bands.append({
+                "label": label,
+                "mean": float(np.mean(band)),
+                "tir": float(np.mean((band >= 70) & (band <= 180)) * 100),
+                "low": float(np.mean(band < 70) * 100),
+                "high": float(np.mean(band > 180) * 100),
+            })
+
     return {
         "mean": mean,
         "std": std,
@@ -341,7 +405,17 @@ def calculate_glucose_metrics(values):
         "tir": tir,
         "hypo": hypo,
         "hyper": hyper,
-        "count": len(values)
+        "very_hypo": very_hypo,
+        "very_hyper": very_hyper,
+        "tight_range": tight_range,
+        # Formula CGM internacional (GMI); no equivale necesariamente a una
+        # HbA1c obtenida en laboratorio.
+        "gmi": 3.31 + (0.02392 * mean),
+        "count": len(values),
+        "coverage": coverage,
+        "days_with_data": days_with_data,
+        "low_events": low_episode_summary(),
+        "time_bands": time_bands,
     }
 
 def agp_data(values):
@@ -554,7 +628,7 @@ def aggregate_events(events):
 # GENERACIÓN HTML
 # ============================================================================
 
-def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho, legacy_assets, clarity_history=None):
+def generate_html_report(end, start, metrics, previous_metrics, daily_profiles, aggregated, renpho, legacy_assets, clarity_history=None):
     """Generar HTML del informe completo."""
     # Las rutas de las imágenes diarias se reutilizan. Esta versión evita que
     # el navegador muestre una copia en caché después de actualizar el informe.
@@ -576,6 +650,46 @@ def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho
             <td><small>{workout_str}</small></td>
         </tr>
         """
+
+    def delta(value, previous, suffix="", decimals=1, inverted=False):
+        """Texto de variacion respecto al periodo anterior, si hay datos."""
+        if not previous or not previous.get("count"):
+            return "Sin periodo previo comparable"
+        change = value - previous
+        if abs(change) < 0.05:
+            return "Sin cambios relevantes"
+        arrow = "↑" if change > 0 else "↓"
+        color = "#16a34a" if ((change > 0) != inverted) else "#dc2626"
+        return f'<span style="color:{color};font-weight:700">{arrow} {abs(change):.{decimals}f}{suffix}</span> vs. 14 dias previos'
+
+    comparison_html = ""
+    if previous_metrics and previous_metrics.get("count"):
+        comparison_html = f"""
+        <section class="control-section">
+            <h2>Comparativa con los 14 dias previos</h2>
+            <p class="section-note">Cambio descriptivo entre dos periodos consecutivos. Interpretar junto a la cobertura de datos.</p>
+            <div class="cards compact-cards">
+                <div class="card"><b>Tiempo en rango</b><h3>{metrics['tir']:.1f}%</h3><small>{delta(metrics['tir'], previous_metrics['tir'], '%')}</small></div>
+                <div class="card"><b>Glucosa media</b><h3>{metrics['mean']:.0f} mg/dL</h3><small>{delta(metrics['mean'], previous_metrics['mean'], ' mg/dL', 0, inverted=True)}</small></div>
+                <div class="card"><b>Variabilidad (CV)</b><h3>{metrics['cv']:.1f}%</h3><small>{delta(metrics['cv'], previous_metrics['cv'], '%', 1, inverted=True)}</small></div>
+            </div>
+        </section>
+        """
+
+    band_rows = "".join(
+        f"<tr><td><strong>{band['label']}</strong></td><td>{band['mean']:.0f}</td><td>{band['tir']:.1f}%</td><td>{band['low']:.1f}%</td><td>{band['high']:.1f}%</td></tr>"
+        for band in metrics["time_bands"]
+    )
+    band_html = f"""
+        <section class="time-section">
+            <h2>Patron por franja horaria</h2>
+            <p class="section-note">Media y distribucion de las lecturas disponibles en cada franja.</p>
+            <table>
+                <tr><th>Franja</th><th>Media (mg/dL)</th><th>En rango</th><th>&lt;70</th><th>&gt;180</th></tr>
+                {band_rows}
+            </table>
+        </section>
+    """ if band_rows else ""
     
     # Preparar sección RENPHO
     renpho_html = ""
@@ -687,6 +801,10 @@ def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho
         }}
         .card b {{ display: block; font-size: 0.85rem; color: #6b7280; margin-bottom: 0.5rem; }}
         .card h2, .card h3 {{ font-size: 2rem; color: #667eea; }}
+        .compact-cards .card {{ padding: 1rem; }}
+        .compact-cards .card h3 {{ font-size: 1.45rem; }}
+        .section-note {{ color: #4b5563; font-size: .92rem; margin: -.35rem 0 1rem; }}
+        .metric-note {{ color: #4b5563; font-size: .88rem; margin-top: -.75rem; }}
         
         img {{ max-width: 100%; height: auto; border-radius: 8px; }}
         
@@ -786,7 +904,48 @@ def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho
                 <small style="color: #ea580c;">Alto</small>
             </div>
         </div>
+        <p class="metric-note">Porcentajes calculados sobre las lecturas disponibles. Los objetivos, si se usan, deben ser personalizados con el equipo clinico.</p>
     </section>
+
+    <section class="control-section">
+        <h2>Control y seguridad</h2>
+        <div class="cards compact-cards">
+            <div class="card">
+                <b>GMI estimado</b>
+                <h3>{metrics['gmi']:.1f}%</h3>
+                <small>Estimacion CGM; no sustituye HbA1c de laboratorio.</small>
+            </div>
+            <div class="card">
+                <b>Cobertura CGM</b>
+                <h3>{metrics['coverage']:.1f}%</h3>
+                <small>{metrics['days_with_data']} dias con lecturas.</small>
+            </div>
+            <div class="card">
+                <b>Rango estrecho (70-140)</b>
+                <h3>{metrics['tight_range']:.1f}%</h3>
+                <small>Indicador descriptivo adicional.</small>
+            </div>
+            <div class="card">
+                <b>Muy bajo (&lt;54)</b>
+                <h3>{metrics['very_hypo']:.1f}%</h3>
+                <small>Parte del tiempo bajo total.</small>
+            </div>
+            <div class="card">
+                <b>Muy alto (&gt;250)</b>
+                <h3>{metrics['very_hyper']:.1f}%</h3>
+                <small>Parte del tiempo alto total.</small>
+            </div>
+            <div class="card">
+                <b>Episodios bajo 70</b>
+                <h3>{metrics['low_events']['count']}</h3>
+                <small>{metrics['low_events']['minutes']} min estimados; max. {metrics['low_events']['longest']} min.</small>
+            </div>
+        </div>
+    </section>
+
+    {comparison_html}
+
+    {band_html}
     
     <section class="agp-section">
         <h2>📉 AGP - Arbol de Glicemia Promedio</h2>
@@ -830,7 +989,7 @@ def generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho
             </div>
             <div class="card">
                 <b>Período cubierto</b>
-                <h3>14 días</h3>
+                <h3>{metrics['days_with_data']}/14 dias</h3>
             </div>
         </div>
     </section>
@@ -854,12 +1013,17 @@ def write_report():
     
     end = datetime.now(TZ)
     start = end - timedelta(days=14)
+    previous_start = start - timedelta(days=14)
     
     # Obtener datos
     log.info("Obteniendo datos de Nightscout...")
     nightscout_data = glucose_from_nightscout(start, end)
     glucose_data = glucose_with_clarity_continuity(nightscout_data, start, end)
     log.info("Continuidad de glucosa: %s lecturas Nightscout, %s lecturas combinadas", len(nightscout_data), len(glucose_data))
+
+    log.info("Obteniendo periodo anterior para la comparativa...")
+    previous_nightscout_data = glucose_from_nightscout(previous_start, start)
+    previous_glucose_data = glucose_with_clarity_continuity(previous_nightscout_data, previous_start, start)
     
     log.info("Obteniendo eventos de base de datos...")
     events = health_events_from_db(start)
@@ -872,6 +1036,7 @@ def write_report():
     # Calcular métricas
     log.info("Calculando métricas glucémicas...")
     metrics = calculate_glucose_metrics(glucose_data)
+    previous_metrics = calculate_glucose_metrics(previous_glucose_data)
     
     # Generar gráficos
     log.info("Generando gráfico AGP...")
@@ -886,7 +1051,7 @@ def write_report():
     
     # Generar HTML
     log.info("Generando HTML...")
-    html = generate_html_report(end, start, metrics, daily_profiles, aggregated, renpho, legacy_assets, clarity_history)
+    html = generate_html_report(end, start, metrics, previous_metrics, daily_profiles, aggregated, renpho, legacy_assets, clarity_history)
     
     # Guardar informe semanal
     week_file = OUT / "healthhub-semanal.html"
