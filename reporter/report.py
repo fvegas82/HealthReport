@@ -296,6 +296,60 @@ def renpho_composition():
             log.warning(f"No se pudo recuperar OCR RENPHO: {e}")
     return None
 
+def renpho_history():
+    """Lee el historico local de RENPHO y conserva la lectura recuperada inicial."""
+    history_file = RENPHO_AUDIT_DIR / "history.json"
+    readings = []
+    try:
+        if history_file.exists():
+            raw = json.loads(history_file.read_text(encoding="utf-8"))
+            if isinstance(raw, list):
+                readings = [normalize_renpho_reading(item) for item in raw if isinstance(item, dict)]
+    except Exception as error:
+        log.warning("No se pudo leer el historico RENPHO: %s", error)
+    latest = renpho_composition()
+    if latest and not any(item.get("captured_at") == latest.get("captured_at") for item in readings):
+        readings.append(latest)
+    return sorted((item for item in readings if item.get("captured_at")), key=lambda item: item["captured_at"])
+
+def plot_renpho_evolution(readings, output_path):
+    """Grafico local de evolucion; requiere al menos dos mediciones RENPHO."""
+    dated = []
+    for reading in readings:
+        try:
+            dated.append((datetime.fromisoformat(reading["captured_at"]), reading))
+        except (ValueError, TypeError):
+            continue
+    if len(dated) < 2:
+        output_path.unlink(missing_ok=True)
+        return None
+    dates = [when for when, _ in dated]
+    series = [
+        ("Peso (kg)", "weight", "#2563eb"),
+        ("Grasa corporal (%)", "fat_percentage", "#ea580c"),
+        ("Masa muscular (kg)", "muscle_mass", "#059669"),
+    ]
+    available = [item for item in series if sum(reading.get(item[1]) is not None for _, reading in dated) >= 2]
+    if not available:
+        output_path.unlink(missing_ok=True)
+        return None
+    fig, axes = plt.subplots(len(available), 1, figsize=(12, 3.2 * len(available)), sharex=True)
+    if len(available) == 1:
+        axes = [axes]
+    for axis, (label, key, color) in zip(axes, available):
+        x = [when for when, reading in dated if reading.get(key) is not None]
+        y = [float(reading[key]) for _, reading in dated if reading.get(key) is not None]
+        axis.plot(x, y, marker="o", linewidth=2.4, color=color)
+        axis.set_ylabel(label, fontweight="bold")
+        axis.grid(alpha=.22)
+        axis.spines[["top", "right"]].set_visible(False)
+    axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%d/%m"))
+    fig.suptitle("Evolucion de la composicion corporal", fontsize=16, fontweight="bold")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    return output_path.name
+
 def preserve_legacy_assets():
     """Conservar únicamente la comparativa histórica de 14 días.
 
@@ -631,7 +685,7 @@ def aggregate_events(events):
 # GENERACIÓN HTML
 # ============================================================================
 
-def generate_html_report(end, start, metrics, previous_metrics, daily_profiles, aggregated, renpho, legacy_assets, clarity_history=None):
+def generate_html_report(end, start, metrics, previous_metrics, daily_profiles, aggregated, renpho, renpho_chart, legacy_assets, clarity_history=None):
     """Generar HTML del informe completo."""
     # Las rutas de las imágenes diarias se reutilizan. Esta versión evita que
     # el navegador muestre una copia en caché después de actualizar el informe.
@@ -726,6 +780,7 @@ def generate_html_report(end, start, metrics, previous_metrics, daily_profiles, 
             <h2>⚖️ Composición corporal (RENPHO)</h2>
             <p>{source_note} Valores extraídos localmente; la imagen original no se muestra en el informe.</p>
             <div class="cards">{cards_html}</div>
+            {f'<img src="{renpho_chart}?v={asset_version}" alt="Evolucion de la composicion corporal RENPHO">' if renpho_chart else '<p class="section-note">La grafica de evolucion aparecera al disponer de al menos dos reportes RENPHO.</p>'}
         </section>
         """
 
@@ -1033,6 +1088,7 @@ def write_report():
     
     log.info("Leyendo composición RENPHO...")
     renpho = renpho_composition()
+    renpho_chart = plot_renpho_evolution(renpho_history(), OUT / "renpho-evolution.png")
     legacy_assets = preserve_legacy_assets()
     clarity_history = write_clarity_history()
     
@@ -1054,7 +1110,7 @@ def write_report():
     
     # Generar HTML
     log.info("Generando HTML...")
-    html = generate_html_report(end, start, metrics, previous_metrics, daily_profiles, aggregated, renpho, legacy_assets, clarity_history)
+    html = generate_html_report(end, start, metrics, previous_metrics, daily_profiles, aggregated, renpho, renpho_chart, legacy_assets, clarity_history)
     
     # Guardar informe semanal
     week_file = OUT / "healthhub-semanal.html"
