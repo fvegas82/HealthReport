@@ -575,6 +575,9 @@ def plot_daily_profiles(values, events, output_dir):
             # Datos del día
             times = [t for t, _ in by_day[day]]
             glu = [v for _, v in by_day[day]]
+            daily_mean = float(np.mean(glu))
+            daily_min = float(np.min(glu))
+            daily_max = float(np.max(glu))
             
             ax.axhspan(70, 180, color="#dcfce7", alpha=0.78)
             ax.axhline(70, color="#15803d", lw=1.2)
@@ -620,7 +623,10 @@ def plot_daily_profiles(values, events, output_dir):
             ax.set(xlim=(datetime.combine(day, datetime.min.time(), tzinfo=TZ),
                          datetime.combine(day, datetime.max.time(), tzinfo=TZ)),
                    ylim=(40, 300), ylabel="mg/dL",
-                   title=f"Perfil diario - {day.strftime('%d/%m/%Y')}")
+                   title=(f"Perfil diario - {day.strftime('%d/%m/%Y')}\n"
+                          f"Media {daily_mean:.0f} mg/dL   |   "
+                          f"Min {daily_min:.0f} mg/dL   |   "
+                          f"Max {daily_max:.0f} mg/dL"))
             ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
             ax.grid(alpha=0.28, color="#94a3b8", linewidth=0.7)
             
