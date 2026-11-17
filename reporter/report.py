@@ -372,7 +372,7 @@ def preserve_legacy_assets():
 # CÁLCULOS GLUCÉMICOS
 # ============================================================================
 
-def calculate_glucose_metrics(values):
+def calculate_glucose_metrics(values, period_days=14):
     """Calcula las metricas descriptivas de CGM para el informe.
 
     Los porcentajes se calculan sobre las lecturas disponibles; la cobertura
@@ -402,7 +402,7 @@ def calculate_glucose_metrics(values):
 
     # Cobertura: una lectura por cada bloque de cinco minutos. El valor no se
     # usa para decisiones clinicas; solo califica la fiabilidad del resumen.
-    period_seconds = 14 * 24 * 60 * 60
+    period_seconds = period_days * 24 * 60 * 60
     slots = {
         int((when.astimezone(TZ).timestamp()) // 300)
         for when, _ in values
@@ -411,7 +411,7 @@ def calculate_glucose_metrics(values):
     # Una ventana movil de 14 x 24 horas puede tocar quince fechas del
     # calendario (un fragmento del primer y ultimo dia). El informe expresa
     # dias completos de la ventana, no fechas del calendario.
-    days_with_data = min(14, len({when.astimezone(TZ).date() for when, _ in values}))
+    days_with_data = min(period_days, len({when.astimezone(TZ).date() for when, _ in values}))
 
     def low_episode_summary():
         episodes = []
@@ -507,7 +507,7 @@ def label_reference_lines(ax):
             bbox={"boxstyle": "round,pad=0.18", "fc": "white", "ec": "none", "alpha": 0.92},
         )
 
-def plot_agp(values, output_path):
+def plot_agp(values, output_path, period_days=14):
     """Genera un AGP de alto contraste y legible en pantalla."""
     percentiles, x = agp_data(values)
     if percentiles is None:
@@ -529,7 +529,7 @@ def plot_agp(values, output_path):
         label_reference_lines(ax)
         
         ax.set(xlim=(0, 24), ylim=(40, 300), xlabel="Hora del día", 
-               ylabel="mg/dL", title="AGP - Últimos 14 días")
+               ylabel="mg/dL", title=f"AGP - Ultimos {period_days} dias")
         ax.xaxis.set_major_locator(mticker.MultipleLocator(2))
         ax.xaxis.set_minor_locator(mticker.MultipleLocator(1))
         ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda hour, _: f"{int(hour):02d}:00"))
@@ -545,8 +545,8 @@ def plot_agp(values, output_path):
         log.error(f"Error generando AGP: {e}")
         return False
 
-def plot_daily_profiles(values, events, output_dir):
-    """Generar gráficos de perfiles diarios (últimos 14 días)."""
+def plot_daily_profiles(values, events, output_dir, max_days=14):
+    """Generar gráficos de perfiles diarios del periodo solicitado."""
     if not values:
         return []
     
@@ -568,7 +568,7 @@ def plot_daily_profiles(values, events, output_dir):
     
     saved = []
     # Newest first, for the whole reporting period.
-    for day in sorted(by_day.keys(), reverse=True)[:14]:
+    for day in sorted(by_day.keys(), reverse=True)[:max_days]:
         try:
             fig, ax = plt.subplots(figsize=(14, 7.2), dpi=120)
             
@@ -691,11 +691,12 @@ def aggregate_events(events):
 # GENERACIÓN HTML
 # ============================================================================
 
-def generate_html_report(end, start, metrics, previous_metrics, daily_profiles, aggregated, renpho, renpho_chart, legacy_assets, clarity_history=None):
+def generate_html_report(end, start, metrics, previous_metrics, daily_profiles, aggregated, renpho, renpho_chart, legacy_assets, clarity_history=None, period_days=14, asset_prefix="", include_legacy=True):
     """Generar HTML del informe completo."""
     # Las rutas de las imágenes diarias se reutilizan. Esta versión evita que
     # el navegador muestre una copia en caché después de actualizar el informe.
     asset_version = int(time.time())
+    asset = lambda name: f"{asset_prefix}{name}"
     
     # Preparar tabla de actividad
     activity_rows = ""
@@ -723,13 +724,13 @@ def generate_html_report(end, start, metrics, previous_metrics, daily_profiles, 
             return "Sin cambios relevantes"
         arrow = "↑" if change > 0 else "↓"
         color = "#16a34a" if ((change > 0) != inverted) else "#dc2626"
-        return f'<span style="color:{color};font-weight:700">{arrow} {abs(change):.{decimals}f}{suffix}</span> vs. 14 dias previos'
+        return f'<span style="color:{color};font-weight:700">{arrow} {abs(change):.{decimals}f}{suffix}</span> vs. {period_days} dias previos'
 
     comparison_html = ""
     if previous_metrics and previous_metrics.get("count"):
         comparison_html = f"""
         <section class="control-section">
-            <h2>Comparativa con los 14 dias previos</h2>
+            <h2>Comparativa con los {period_days} dias previos</h2>
             <p class="section-note">Cambio descriptivo entre dos periodos consecutivos. Interpretar junto a la cobertura de datos.</p>
             <div class="cards compact-cards">
                 <div class="card"><b>Tiempo en rango</b><h3>{metrics['tir']:.1f}%</h3><small>{delta(metrics['tir'], previous_metrics['tir'], '%')}</small></div>
@@ -797,7 +798,7 @@ def generate_html_report(end, start, metrics, previous_metrics, daily_profiles, 
     )
     legacy_glucose_html = "".join([
         graph("comparison", "Comparativa de 14 días", "Una curva por día para comparar patrones horarios."),
-    ])
+    ]) if include_legacy else ""
     clarity_history_html = (
         '<section><h2>Histórico Clarity</h2><p>Periodo previo al cambio de aplicación: '
         f'<a href="{clarity_history}">abrir los 14 días históricos</a>.</p></section>'
@@ -807,9 +808,9 @@ def generate_html_report(end, start, metrics, previous_metrics, daily_profiles, 
     # Preparar imágenes de perfiles diarios
     profiles_html = ""
     if daily_profiles:
-        profiles_html = "<section class='daily-profiles'><h2>📊 Perfiles Diarios - últimos 14 días</h2><div class='profile-list'>"
+        profiles_html = f"<section class='daily-profiles'><h2>📊 Perfiles Diarios - ultimos {period_days} dias</h2><div class='profile-list'>"
         for img in daily_profiles:
-            profiles_html += f'<figure><img src="{img}?v={asset_version}" alt="Perfil diario"></figure>'
+            profiles_html += f'<figure><img src="{asset(img)}?v={asset_version}" alt="Perfil diario"></figure>'
         profiles_html += "</div></section>"
     
     html = f"""<!DOCTYPE html>
@@ -933,7 +934,7 @@ def generate_html_report(end, start, metrics, previous_metrics, daily_profiles, 
 <body>
 <main>
     <header>
-        <h1>📊 Informe Integrado de 14 días</h1>
+        <h1>📊 Informe Integrado de {period_days} dias</h1>
         <p>Generado {end.strftime('%d/%m/%Y %H:%M')} {TZ.key}</p>
         <p><small>Datos descriptivos; no constituyen recomendación clínica.</small></p>
     </header>
@@ -1013,8 +1014,8 @@ def generate_html_report(end, start, metrics, previous_metrics, daily_profiles, 
     
     <section class="agp-section">
         <h2>📉 AGP - Arbol de Glicemia Promedio</h2>
-        <img src="agp.png?v={asset_version}" alt="Gráfico AGP de glucosa">
-        <p><small>Percentiles de glucosa por hora (últimos 14 días). P5-P95 (claro), P25-P75 (oscuro), P50 (línea central).</small></p>
+        <img src="{asset('agp.png')}?v={asset_version}" alt="Gráfico AGP de glucosa">
+        <p><small>Percentiles de glucosa por hora (ultimos {period_days} dias). P5-P95 (claro), P25-P75 (oscuro), P50 (línea central).</small></p>
     </section>
     
     {legacy_glucose_html}
@@ -1053,7 +1054,7 @@ def generate_html_report(end, start, metrics, previous_metrics, daily_profiles, 
             </div>
             <div class="card">
                 <b>Período cubierto</b>
-                <h3>{metrics['days_with_data']}/14 dias</h3>
+                <h3>{metrics['days_with_data']}/{period_days} dias</h3>
             </div>
         </div>
     </section>
@@ -1133,6 +1134,38 @@ def write_report():
     # Crear último enlace
     latest_file = OUT / "ultimo.html"
     latest_file.write_text(html, encoding="utf-8")
+
+    # Informe ampliado independiente: sus recursos viven en ``mensual/`` para
+    # que no sustituyan los graficos del informe de 14 dias.
+    monthly_days = 30
+    monthly_start = end - timedelta(days=monthly_days)
+    monthly_previous_start = monthly_start - timedelta(days=monthly_days)
+    log.info("Generando informe ampliado de %s dias...", monthly_days)
+    monthly_nightscout = glucose_from_nightscout(monthly_start, end)
+    monthly_glucose = glucose_with_clarity_continuity(monthly_nightscout, monthly_start, end)
+    monthly_previous_nightscout = glucose_from_nightscout(monthly_previous_start, monthly_start)
+    monthly_previous_glucose = glucose_with_clarity_continuity(
+        monthly_previous_nightscout, monthly_previous_start, monthly_start
+    )
+    monthly_events = health_events_from_db(monthly_start)
+    monthly_assets = OUT / "mensual"
+    monthly_assets.mkdir(parents=True, exist_ok=True)
+    plot_agp(monthly_glucose, monthly_assets / "agp.png", period_days=monthly_days)
+    monthly_profiles = plot_daily_profiles(monthly_glucose, monthly_events, monthly_assets, max_days=monthly_days)
+    monthly_html = generate_html_report(
+        end, monthly_start,
+        calculate_glucose_metrics(monthly_glucose, period_days=monthly_days),
+        calculate_glucose_metrics(monthly_previous_glucose, period_days=monthly_days),
+        monthly_profiles, aggregate_events(monthly_events), renpho, renpho_chart,
+        legacy_assets, clarity_history, period_days=monthly_days,
+        asset_prefix="mensual/", include_legacy=False,
+    )
+    monthly_file = OUT / "healthhub-mensual.html"
+    monthly_file.write_text(monthly_html, encoding="utf-8")
+    monthly_timestamped = OUT / f"healthhub-mensual-{year}-W{week_num:02d}.html"
+    monthly_timestamped.write_text(monthly_html, encoding="utf-8")
+    log.info("Informe ampliado guardado: %s", monthly_file)
+
     REFRESH_REQUEST.unlink(missing_ok=True)
     log.info("✅ Informe generado exitosamente")
 
