@@ -354,7 +354,10 @@ def calculate_glucose_metrics(values):
         for when, _ in values
     }
     coverage = min(100.0, len(slots) / (period_seconds / 300) * 100)
-    days_with_data = len({when.astimezone(TZ).date() for when, _ in values})
+    # Una ventana movil de 14 x 24 horas puede tocar quince fechas del
+    # calendario (un fragmento del primer y ultimo dia). El informe expresa
+    # dias completos de la ventana, no fechas del calendario.
+    days_with_data = min(14, len({when.astimezone(TZ).date() for when, _ in values}))
 
     def low_episode_summary():
         episodes = []
