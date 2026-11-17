@@ -120,7 +120,7 @@ services:
       - |
         apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
         git clone --depth 1 --branch master https://github.com/fvegas82/HealthReport.git /tmp/HealthReport
-        pip install --no-cache-dir fastapi 'uvicorn[standard]' 'psycopg[binary]' python-multipart
+        pip install --no-cache-dir fastapi 'uvicorn[standard]' 'psycopg[binary]' python-multipart reportlab
         exec uvicorn main:app --app-dir /tmp/HealthReport/portal/app --host 0.0.0.0 --port 8000
     volumes:
       - healthhub_backups:/reports

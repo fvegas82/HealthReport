@@ -1,13 +1,70 @@
-import hashlib, json, os
+import hashlib, io, json, os, re
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import psycopg
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen import canvas
 
 app=FastAPI(docs_url=None,redoc_url=None); DSN=os.environ["DATABASE_URL"]; REPORTS=Path("/reports/healthhub/reports/semanal")
 REFRESH_REQUEST = REPORTS.parent / ".refresh-request"
 CLARITY_EXPORT = Path("/reports/healthhub/clarity/clarity-export.csv")
+
+def request_refresh():
+    REFRESH_REQUEST.parent.mkdir(parents=True, exist_ok=True)
+    REFRESH_REQUEST.touch()
+
+def safe_pdf_path(folder, filename):
+    """Limita el guardado a una carpeta PDF dentro del volumen del NAS."""
+    relative = PurePosixPath(folder.strip() or "semanal")
+    if relative.is_absolute() or ".." in relative.parts:
+        raise HTTPException(400, "La carpeta debe ser una ruta relativa dentro de PDF.")
+    clean_name = re.sub(r"[^A-Za-z0-9._-]", "-", filename.strip() or "health-report")
+    if not clean_name.endswith(".pdf"):
+        clean_name += ".pdf"
+    base = (REPORTS / "pdf").resolve()
+    target_dir = (base / relative).resolve()
+    if base not in target_dir.parents and target_dir != base:
+        raise HTTPException(400, "Ruta PDF no permitida.")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    return target_dir / clean_name
+
+def draw_image(pdf, image_path, title):
+    width, height = landscape(A4)
+    margin = 34
+    pdf.setFont("Helvetica-Bold", 15)
+    pdf.drawString(margin, height - margin, title)
+    image = ImageReader(str(image_path))
+    source_width, source_height = image.getSize()
+    scale = min((width - 2 * margin) / source_width, (height - 92) / source_height)
+    draw_width, draw_height = source_width * scale, source_height * scale
+    pdf.drawImage(image, (width - draw_width) / 2, (height - 54 - draw_height) / 2, draw_width, draw_height)
+
+def build_pdf(output_path):
+    """Crea un PDF portable con el AGP y los catorce perfiles actuales."""
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=landscape(A4))
+    pdf.setTitle("Health Report")
+    width, height = landscape(A4)
+    pdf.setFont("Helvetica-Bold", 24)
+    pdf.drawString(42, height - 66, "Health Report - Informe integrado")
+    pdf.setFont("Helvetica", 12)
+    pdf.drawString(42, height - 92, f"Generado {datetime.now().astimezone().strftime('%d/%m/%Y %H:%M')}")
+    pdf.drawString(42, height - 116, "Datos descriptivos; no constituyen recomendacion clinica.")
+    pdf.showPage()
+    agp = REPORTS / "agp.png"
+    if agp.is_file():
+        draw_image(pdf, agp, "AGP - ultimos 14 dias")
+        pdf.showPage()
+    for chart in sorted(REPORTS.glob("daily-*.png"), reverse=True)[:14]:
+        draw_image(pdf, chart, f"Perfil diario - {chart.stem.removeprefix('daily-')}")
+        pdf.showPage()
+    pdf.save()
+    temporary = output_path.with_suffix(".tmp")
+    temporary.write_bytes(buffer.getvalue())
+    temporary.replace(output_path)
 def event(kind, occurred_at, payload):
     record={"source":"portal","event_type":kind,"occurred_at":occurred_at,"payload":payload}
     raw=json.dumps(record,sort_keys=True,separators=(",",":")); digest=hashlib.sha256(raw.encode()).hexdigest()
@@ -16,7 +73,7 @@ def event(kind, occurred_at, payload):
     REFRESH_REQUEST.parent.mkdir(parents=True, exist_ok=True)
     REFRESH_REQUEST.touch()
 
-@app.get("/",response_class=HTMLResponse)
+@app.get("/legacy",response_class=HTMLResponse)
 def index():
     now = datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M")
     return f'''<!doctype html><html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Health Report</title><style>
@@ -36,6 +93,29 @@ def index():
       }} catch (_) {{button.disabled=false;button.textContent='Actualizar informe';status.textContent='No se pudo solicitar la actualización. Inténtalo de nuevo.';}}
     }});
     </script></html>'''
+@app.get("/", response_class=HTMLResponse)
+def dashboard():
+    now = datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M")
+    pdf_name = f"health-report-{datetime.now().astimezone().strftime('%Y-%m-%d')}.pdf"
+    return f'''<!doctype html><html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Health Report</title>
+<style>
+*{{box-sizing:border-box}}body{{margin:0;background:#f3f6fb;color:#17243a;font:16px system-ui}}.bar{{background:#102a43;color:#fff;padding:18px 24px}}.bar-inner,main{{max-width:1280px;margin:auto}}.bar-inner{{display:flex;gap:14px;align-items:center}}.brand{{font-size:21px;font-weight:750;flex:1}}.sub{{opacity:.82;font-size:14px}}main{{padding:22px 20px}}.actions{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:18px}}button,.link{{border:0;border-radius:10px;padding:13px 16px;font:inherit;font-weight:750;cursor:pointer;text-decoration:none;text-align:center}}.action{{background:#fff;color:#17243a;border:1px solid #d8e2ef;box-shadow:0 2px 8px #102a4312}}.action:hover{{border-color:#2a7a5a;background:#f0fdf4}}.secondary{{background:#d8f3e3;color:#062a1b;padding:9px 13px;font-size:14px}}.link{{color:#fff;border:1px solid #ffffff55;padding:8px 12px;font-size:14px}}dialog{{border:0;border-radius:16px;padding:0;max-width:460px;width:calc(100% - 32px);box-shadow:0 18px 56px #102a4380}}dialog::backdrop{{background:#102a4366}}.dialog-body{{padding:24px}}h2{{margin:0 0 8px;font-size:21px}}p{{margin:0 0 16px;color:#53647d}}label{{display:block;font-size:13px;font-weight:700;margin-top:12px}}input,select{{width:100%;padding:11px;margin-top:5px;border:1px solid #ccd6e3;border-radius:8px;font:inherit}}.dialog-actions{{display:flex;gap:10px;justify-content:flex-end;margin-top:20px}}.cancel{{background:#edf2f7;color:#34455c}}.submit{{background:#38b66b;color:#062a1b}}#refresh-status{{display:block;margin:0 0 14px;color:#53647d}}iframe{{width:100%;min-height:82vh;border:0;border-radius:12px;background:#fff;box-shadow:0 2px 10px #102a4320}}@media(max-width:760px){{.actions{{grid-template-columns:repeat(2,1fr)}}.bar-inner{{flex-wrap:wrap}}.sub{{order:3;width:100%}}}}
+</style>
+<header class="bar"><div class="bar-inner"><div class="brand">Health Report</div><span class="sub">Acceso personal protegido</span><button class="secondary" id="refresh-report" type="button">Actualizar informe</button><a class="link" href="/report/healthhub-semanal.html">Abrir informe</a></div></header>
+<main><section class="actions"><button class="action" data-dialog="insulin">Anadir insulina</button><button class="action" data-dialog="workout">Registrar entrenamiento</button><button class="action" data-dialog="history">Cargar historicos</button><button class="action" data-dialog="pdf">Descargar PDF</button></section><small id="refresh-status">Selecciona una accion para registrar informacion, cargar un historico o generar un PDF.</small><iframe id="report-frame" src="/report/healthhub-semanal.html?v={int(datetime.now().timestamp())}" title="Informe integrado"></iframe></main>
+<dialog id="insulin"><div class="dialog-body"><h2>Anadir insulina</h2><p>La dosis se marcara en las graficas diarias.</p><form data-refresh-form method="post" action="/insulin"><label>Fecha y hora<input required type="datetime-local" name="at" value="{now}"></label><label>Unidades<input required type="number" step="0.1" min="0.1" name="units" placeholder="Ej. 4.5"></label><label>Tipo<select name="kind"><option value="rapida">Rapida</option><option value="basal">Basal</option><option value="otra">Otra</option></select></label><div class="dialog-actions"><button class="cancel" type="button" data-close>Cancelar</button><button class="submit" type="submit">Guardar y actualizar</button></div></form></div></dialog>
+<dialog id="workout"><div class="dialog-body"><h2>Registrar entrenamiento</h2><p>Se mostrara con una marca violeta en las graficas diarias.</p><form data-refresh-form method="post" action="/workout"><label>Inicio<input required type="datetime-local" name="at" value="{now}"></label><label>Duracion (minutos)<input required type="number" min="1" name="minutes" placeholder="Ej. 45"></label><label>Intensidad<select name="intensity"><option value="ligera">Ligera</option><option value="media" selected>Media</option><option value="alta">Alta</option></select></label><div class="dialog-actions"><button class="cancel" type="button" data-close>Cancelar</button><button class="submit" type="submit">Guardar y actualizar</button></div></form></div></dialog>
+<dialog id="history"><div class="dialog-body"><h2>Cargar historicos</h2><p>Selecciona una exportacion CSV de Clarity.</p><form data-refresh-form method="post" action="/clarity/upload" enctype="multipart/form-data"><label>Fichero CSV<input required type="file" accept=".csv,text/csv" name="csv_file"></label><div class="dialog-actions"><button class="cancel" type="button" data-close>Cancelar</button><button class="submit" type="submit">Cargar y actualizar</button></div></form></div></dialog>
+<dialog id="pdf"><div class="dialog-body"><h2>Descargar PDF</h2><p>Tambien se guardara en el NAS, dentro de Informes PDF. El navegador iniciara la descarga.</p><form method="post" action="/pdf"><label>Carpeta en el NAS (ruta relativa)<input name="folder" value="semanal" placeholder="Ej. semana-47"></label><label>Nombre del PDF<input name="filename" value="{pdf_name}"></label><div class="dialog-actions"><button class="cancel" type="button" data-close>Cancelar</button><button class="submit" type="submit">Generar y descargar</button></div></form></div></dialog>
+<script>
+const status=document.getElementById('refresh-status'),frame=document.getElementById('report-frame');
+document.querySelectorAll('[data-dialog]').forEach(button=>button.addEventListener('click',()=>document.getElementById(button.dataset.dialog).showModal()));
+document.querySelectorAll('[data-close]').forEach(button=>button.addEventListener('click',()=>button.closest('dialog').close()));
+async function refresh(){{const response=await fetch('/refresh',{{method:'POST'}});if(!response.ok)throw Error('refresh');setTimeout(()=>{{frame.src='/report/healthhub-semanal.html?v='+Date.now();status.textContent='Informe actualizado.';}},18000);}}
+document.getElementById('refresh-report').addEventListener('click',async event=>{{event.currentTarget.disabled=true;status.textContent='Actualizacion solicitada. Se recargaran los datos al terminar.';try{{await refresh();}}catch(_){{status.textContent='No se pudo solicitar la actualizacion.';}}finally{{setTimeout(()=>event.currentTarget.disabled=false,18000);}}}});
+document.querySelectorAll('form[data-refresh-form]').forEach(form=>form.addEventListener('submit',async event=>{{event.preventDefault();const submit=form.querySelector('[type=submit]');submit.disabled=true;status.textContent='Guardando y regenerando informe...';try{{const response=await fetch(form.action,{{method:'POST',body:new FormData(form)}});if(!response.ok)throw Error('submit');form.closest('dialog').close();await refresh();}}catch(_){{status.textContent='No se pudo guardar la informacion.';submit.disabled=false;}}}}));
+</script></html>'''
+
 @app.post("/insulin")
 def insulin(at:str=Form(...),units:float=Form(...),kind:str=Form(...)):
     event("InsulinDoseRecord",datetime.fromisoformat(at).astimezone().isoformat(),{"units":units,"type":kind}); return RedirectResponse("/",303)
@@ -67,6 +147,13 @@ async def upload_clarity(csv_file: UploadFile = File(...)):
     temporary.replace(CLARITY_EXPORT)
     REFRESH_REQUEST.touch()
     return RedirectResponse("/", 303)
+
+@app.post("/pdf")
+def download_pdf(folder: str = Form("semanal"), filename: str = Form("health-report.pdf")):
+    output_path = safe_pdf_path(folder, filename)
+    build_pdf(output_path)
+    return FileResponse(output_path, media_type="application/pdf", filename=output_path.name)
+
 @app.get("/report/{name:path}")
 def report(name:str):
     path=(REPORTS/name).resolve()
