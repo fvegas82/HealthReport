@@ -653,7 +653,7 @@ def generate_html_report(end, start, metrics, previous_metrics, daily_profiles, 
 
     def delta(value, previous, suffix="", decimals=1, inverted=False):
         """Texto de variacion respecto al periodo anterior, si hay datos."""
-        if not previous or not previous.get("count"):
+        if previous is None:
             return "Sin periodo previo comparable"
         change = value - previous
         if abs(change) < 0.05:
