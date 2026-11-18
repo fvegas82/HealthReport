@@ -21,8 +21,11 @@ def request_refresh():
     REFRESH_REQUEST.touch()
 
 def _number_after(label, text, required=False):
-    """Extrae un numero de la exportacion RENPHO OCR; no adivina valores."""
-    match = re.search(label + r"\s*[:\n ]*([0-9]{1,3}(?:[.,][0-9]{1,2})?)", text, re.I)
+    """Extrae un valor RENPHO aunque el OCR intercale texto o saltos de linea."""
+    # RENPHO dibuja etiquetas y valores en columnas distintas. El OCR puede
+    # insertar puntos, estados como "Average" o una nueva linea entre ambos.
+    label_pattern = re.escape(label).replace(r"\ ", r"\s+").replace(r"\-", r"[-\s]?")
+    match = re.search(label_pattern + r"[^0-9]{0,80}([0-9]{1,4}(?:[.,][0-9]{1,2})?)", text, re.I)
     if not match:
         if required:
             raise HTTPException(422, f"No se pudo leer {label} de la captura RENPHO.")
@@ -31,28 +34,27 @@ def _number_after(label, text, required=False):
 
 def parse_renpho_ocr(text, captured_at):
     """Convierte el OCR local de la imagen RENPHO en una lectura estructurada."""
-    normalized = re.sub(r"\s+", " ", text)
     reading = {
         "captured_at": captured_at,
         "source": "portal-ocr-local",
-        "weight": _number_after(r"Weight", normalized, required=True),
-        "bmi": _number_after(r"BMI", normalized),
-        "fat_percentage": _number_after(r"Body Fat Percentage", normalized),
-        "fat_mass": _number_after(r"Body Fat Mass", normalized),
-        "visceral_fat": _number_after(r"Visceral Fat", normalized),
-        "muscle_percentage": _number_after(r"Muscle Percentage", normalized),
-        "muscle_mass": _number_after(r"Muscle Mass", normalized),
-        "skeletal_muscle_percentage": _number_after(r"Skeletal Muscle Percentage", normalized),
-        "skeletal_muscle_mass": _number_after(r"Skeletal Muscle Mass", normalized),
-        "bone_percentage": _number_after(r"Bone Percentage", normalized),
-        "bone_mass": _number_after(r"Bone Mass", normalized),
-        "fat_free_mass": _number_after(r"Fat-Free Mass", normalized),
-        "metabolic_age": _number_after(r"Metabolic Age", normalized),
-        "bmr": _number_after(r"BMR", normalized),
-        "water_percentage": _number_after(r"Body Water Percentage", normalized),
-        "water_mass": _number_after(r"Body Water Mass", normalized),
-        "protein_percentage": _number_after(r"Protein Percentage", normalized),
-        "protein_mass": _number_after(r"Protein Mass", normalized),
+        "weight": _number_after("Weight", text, required=True),
+        "bmi": _number_after("BMI", text),
+        "fat_percentage": _number_after("Body Fat Percentage", text),
+        "fat_mass": _number_after("Body Fat Mass", text),
+        "visceral_fat": _number_after("Visceral Fat", text),
+        "muscle_percentage": _number_after("Muscle Percentage", text),
+        "muscle_mass": _number_after("Muscle Mass", text),
+        "skeletal_muscle_percentage": _number_after("Skeletal Muscle Percentage", text),
+        "skeletal_muscle_mass": _number_after("Skeletal Muscle Mass", text),
+        "bone_percentage": _number_after("Bone Percentage", text),
+        "bone_mass": _number_after("Bone Mass", text),
+        "fat_free_mass": _number_after("Fat-Free Mass", text),
+        "metabolic_age": _number_after("Metabolic Age", text),
+        "bmr": _number_after("BMR", text),
+        "water_percentage": _number_after("Body Water Percentage", text),
+        "water_mass": _number_after("Body Water Mass", text),
+        "protein_percentage": _number_after("Protein Percentage", text),
+        "protein_mass": _number_after("Protein Mass", text),
     }
     return {key: value for key, value in reading.items() if value is not None}
 
@@ -171,7 +173,8 @@ document.querySelectorAll('[data-dialog]').forEach(button=>button.addEventListen
 document.querySelectorAll('[data-close]').forEach(button=>button.addEventListener('click',()=>button.closest('dialog').close()));
 async function refresh(){{const response=await fetch('/refresh',{{method:'POST'}});if(!response.ok)throw Error('refresh');setTimeout(()=>{{showSelectedReport();status.textContent='Informe actualizado.';}},18000);}}
 document.getElementById('refresh-report').addEventListener('click',async event=>{{event.currentTarget.disabled=true;status.textContent='Actualizacion solicitada. Se recargaran los datos al terminar.';try{{await refresh();}}catch(_){{status.textContent='No se pudo solicitar la actualizacion.';}}finally{{setTimeout(()=>event.currentTarget.disabled=false,18000);}}}});
-document.querySelectorAll('form[data-refresh-form]').forEach(form=>form.addEventListener('submit',async event=>{{event.preventDefault();const submit=form.querySelector('[type=submit]');submit.disabled=true;status.textContent='Guardando y regenerando informe...';try{{const response=await fetch(form.action,{{method:'POST',body:new FormData(form)}});if(!response.ok)throw Error('submit');form.closest('dialog').close();await refresh();}}catch(_){{status.textContent='No se pudo guardar la informacion.';submit.disabled=false;}}}}));
+async function requestError(response){{const body=await response.json().catch(()=>null);return body?.detail||'No se pudo guardar la informacion.';}}
+document.querySelectorAll('form[data-refresh-form]').forEach(form=>form.addEventListener('submit',async event=>{{event.preventDefault();const submit=form.querySelector('[type=submit]');submit.disabled=true;status.textContent='Guardando y regenerando informe...';try{{const response=await fetch(form.action,{{method:'POST',body:new FormData(form)}});if(!response.ok)throw Error(await requestError(response));form.closest('dialog').close();await refresh();}}catch(error){{status.textContent=error.message||'No se pudo guardar la informacion.';submit.disabled=false;}}}}));
 </script></html>'''
 
 @app.post("/insulin")
@@ -235,7 +238,7 @@ async def upload_renpho(report_file: UploadFile = File(...), captured_at: str = 
     temporary.replace(saved_image)
     try:
         result = subprocess.run(
-            ["tesseract", str(saved_image), "stdout", "-l", "eng"],
+            ["tesseract", str(saved_image), "stdout", "-l", "eng", "--psm", "6"],
             check=True, capture_output=True, text=True, timeout=30,
         )
         reading = parse_renpho_ocr(result.stdout, when)
