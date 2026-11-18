@@ -735,6 +735,10 @@ def aggregate_events(events):
         "by_day": {},
         "by_type": {}
     }
+    # Los totales diarios los calcula Health Connect aplicando su prioridad de
+    # fuentes. Si existen, sustituyen la suma bruta de StepsRecord, que puede
+    # incluir registros solapados de varias aplicaciones.
+    daily_step_totals = {}
     
     for event_type, when, payload in events:
         day = when.astimezone(TZ).date()
@@ -750,6 +754,8 @@ def aggregate_events(events):
         
         if event_type == "StepsRecord":
             aggregated["by_day"][day]["steps"] += int(payload.get("count", 0))
+        elif event_type == "DailyStepsTotal":
+            daily_step_totals[day] = max(daily_step_totals.get(day, 0), int(payload.get("count", 0)))
         elif event_type == "DistanceRecord":
             aggregated["by_day"][day]["distance"] += float(payload.get("meters", 0)) / 1000
         elif event_type in ("TotalCaloriesBurnedRecord", "ActiveCaloriesBurnedRecord"):
@@ -768,6 +774,9 @@ def aggregate_events(events):
             })
         
         aggregated["by_type"][event_type].append((when, payload))
+
+    for day, total in daily_step_totals.items():
+        aggregated["by_day"][day]["steps"] = total
     
     return aggregated
 

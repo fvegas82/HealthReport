@@ -2,6 +2,7 @@ package es.fvegas.healthhubbridge
 
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.records.*
+import androidx.health.connect.client.request.AggregateRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import okhttp3.MediaType.Companion.toMediaType
@@ -11,6 +12,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.time.Instant
 import java.time.Duration
+import java.time.ZoneId
 
 class HealthRepository(
     private val client: HealthConnectClient,
@@ -28,7 +30,11 @@ class HealthRepository(
         sync(LeanBodyMassRecord::class, start, { it.time }) { r -> JSONObject().put("kg", r.mass.inKilograms) }
         sync(BoneMassRecord::class, start, { it.time }) { r -> JSONObject().put("kg", r.mass.inKilograms) }
         sync(BodyWaterMassRecord::class, start, { it.time }) { r -> JSONObject().put("kg", r.mass.inKilograms) }
-        sync(StepsRecord::class, start, { it.startTime }) { r -> JSONObject().put("count", r.count) }
+        // Steps from different apps can overlap. Reading every StepsRecord and
+        // adding it in the report counts those overlaps twice. Health Connect's
+        // aggregate API applies the user's activity-source priority and returns
+        // the same deduplicated total that Health Connect presents to the user.
+        syncDailySteps(start)
         sync(DistanceRecord::class, start, { it.startTime }) { r -> JSONObject().put("meters", r.distance.inMeters) }
         sync(ActiveCaloriesBurnedRecord::class, start, { it.startTime }) { r -> JSONObject().put("kcal", r.energy.inKilocalories) }
         sync(TotalCaloriesBurnedRecord::class, start, { it.startTime }) { r -> JSONObject().put("kcal", r.energy.inKilocalories) }
@@ -53,6 +59,32 @@ class HealthRepository(
             JSONObject().put("end", r.endTime.toString())
                 .put("type", r.exerciseType)
                 .put("duration_minutes", Duration.between(r.startTime, r.endTime).toMinutes())
+        }
+    }
+
+    private suspend fun syncDailySteps(start: Instant) {
+        val zone = ZoneId.systemDefault()
+        var day = start.atZone(zone).toLocalDate()
+        val today = Instant.now().atZone(zone).toLocalDate()
+        while (!day.isAfter(today)) {
+            val dayStart = day.atStartOfDay(zone).toInstant()
+            val dayEnd = day.plusDays(1).atStartOfDay(zone).toInstant()
+            val result = client.aggregate(
+                AggregateRequest(
+                    metrics = setOf(StepsRecord.COUNT_TOTAL),
+                    timeRangeFilter = TimeRangeFilter.between(dayStart, dayEnd),
+                )
+            )
+            val count = result[StepsRecord.COUNT_TOTAL] ?: 0L
+            val body = JSONObject()
+                .put("source", "health_connect")
+                .put("event_type", "DailyStepsTotal")
+                .put("occurred_at", dayStart.toString())
+                .put("count", count)
+                .put("day", day.toString())
+                .put("aggregation", "health_connect_priority")
+            post(body)
+            day = day.plusDays(1)
         }
     }
 
