@@ -12,6 +12,9 @@ Infraestructura privada y reproducible para Nightscout, Health Connect, composic
 - `android/`: Health Hub Bridge, aplicación Android que lee Health Connect.
 - `docs/`: procedimientos de despliegue, recuperación y seguridad.
 
+El estado operativo y el procedimiento de continuación más reciente están en
+[docs/CONTINUIDAD_2026-11-18.md](docs/CONTINUIDAD_2026-11-18.md).
+
 ## Reporter v2.0 - Novedades
 
 La versión 2.0 del generador de informes incluye:
@@ -56,14 +59,13 @@ docker compose --env-file .env -f compose/healthhub.yml config
 
 Revisar cambios en Git antes de hacer push.
 
-## Actualizaciones automáticas
+## Actualizaciones
 
-El reporter en docker-compose clona código desde GitHub en cada arranque. Cambios en `master`:
-1. Push a GitHub
-2. Siguiente reinicio del contenedor
-3. Automáticamente descarga y ejecuta código nuevo
-
-Sin intervención manual en Portainer.
+Los servicios `portal` y `reporter` clonan `master` al arrancar, pero no se
+actualizan solos al hacer un `push`. Para activar una versión nueva hay que
+redeplegar el stack `healthhub` en Portainer. El procedimiento seguro y la
+versión de las variables `PORTAL_RELEASE` y `REPORTER_RELEASE` se describen en
+[la guía de continuidad](docs/CONTINUIDAD_2026-11-18.md).
 
 ## Estado inicial importado
 
