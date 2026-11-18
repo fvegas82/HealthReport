@@ -297,7 +297,7 @@ def renpho_composition():
     return None
 
 def renpho_history():
-    """Lee el historico local de RENPHO y conserva la lectura recuperada inicial."""
+    """Lee el historico local e incorpora la lectura auditada pre-migracion."""
     history_file = RENPHO_AUDIT_DIR / "history.json"
     readings = []
     try:
@@ -310,6 +310,18 @@ def renpho_history():
     latest = renpho_composition()
     if latest and not any(item.get("captured_at") == latest.get("captured_at") for item in readings):
         readings.append(latest)
+
+    # ``ultimo.json`` pasa a contener la ultima carga del portal, por lo que
+    # no debe ocultar la medicion RENPHO validada antes de la migracion. La
+    # incorporamos como primer punto solo cuando no este ya en el historico.
+    for filename, recovered_values in RECOVERED_RENPHO_OCR.items():
+        recovered = {
+            **recovered_values,
+            "source_filename": filename,
+            "source": "ocr-local-recovered",
+        }
+        if not any(item.get("captured_at") == recovered["captured_at"] for item in readings):
+            readings.append(recovered)
     return sorted((item for item in readings if item.get("captured_at")), key=lambda item: item["captured_at"])
 
 def plot_renpho_evolution(readings, output_path):
