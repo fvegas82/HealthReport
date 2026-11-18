@@ -313,14 +313,19 @@ def renpho_history():
     return sorted((item for item in readings if item.get("captured_at")), key=lambda item: item["captured_at"])
 
 def plot_renpho_evolution(readings, output_path):
-    """Grafico local de evolucion; requiere al menos dos mediciones RENPHO."""
+    """Genera el grafico RENPHO desde la primera medicion disponible.
+
+    La primera carga actua como linea base. Con las cargas posteriores el mismo
+    grafico se convierte en una evolucion temporal, sin tener que esperar a
+    disponer de un segundo informe para que la seccion sea visible.
+    """
     dated = []
     for reading in readings:
         try:
             dated.append((datetime.fromisoformat(reading["captured_at"]), reading))
         except (ValueError, TypeError):
             continue
-    if len(dated) < 2:
+    if not dated:
         output_path.unlink(missing_ok=True)
         return None
     dates = [when for when, _ in dated]
@@ -329,7 +334,7 @@ def plot_renpho_evolution(readings, output_path):
         ("Grasa corporal (%)", "fat_percentage", "#ea580c"),
         ("Masa muscular (kg)", "muscle_mass", "#059669"),
     ]
-    available = [item for item in series if sum(reading.get(item[1]) is not None for _, reading in dated) >= 2]
+    available = [item for item in series if any(reading.get(item[1]) is not None for _, reading in dated)]
     if not available:
         output_path.unlink(missing_ok=True)
         return None
@@ -339,8 +344,17 @@ def plot_renpho_evolution(readings, output_path):
     for axis, (label, key, color) in zip(axes, available):
         x = [when for when, reading in dated if reading.get(key) is not None]
         y = [float(reading[key]) for _, reading in dated if reading.get(key) is not None]
-        axis.plot(x, y, marker="o", linewidth=2.4, color=color)
+        axis.plot(x, y, marker="o", linewidth=2.4 if len(x) > 1 else 0, markersize=7, color=color)
         axis.set_ylabel(label, fontweight="bold")
+        if len(x) == 1:
+            axis.annotate(
+                "Linea base",
+                (x[0], y[0]),
+                xytext=(8, 10),
+                textcoords="offset points",
+                fontsize=9,
+                color="#475569",
+            )
         axis.grid(alpha=.22)
         axis.spines[["top", "right"]].set_visible(False)
     axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%d/%m"))
@@ -873,7 +887,7 @@ def generate_html_report(end, start, metrics, previous_metrics, daily_profiles, 
             <h2>⚖️ Composición corporal (RENPHO)</h2>
             <p>{source_note} Valores extraídos localmente; la imagen original no se muestra en el informe.</p>
             <div class="cards">{cards_html}</div>
-            {f'<img src="{renpho_chart}?v={asset_version}" alt="Evolucion de la composicion corporal RENPHO">' if renpho_chart else '<p class="section-note">La grafica de evolucion aparecera al disponer de al menos dos reportes RENPHO.</p>'}
+            {f'<img src="{renpho_chart}?v={asset_version}" alt="Evolucion de la composicion corporal RENPHO">' if renpho_chart else '<p class="section-note">La grafica aparecera al cargar el primer reporte RENPHO valido.</p>'}
         </section>
         """
 
