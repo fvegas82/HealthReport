@@ -1,13 +1,16 @@
-import hashlib, io, json, os, re, subprocess
+import hashlib, html, json, os, re, subprocess, unicodedata
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 import psycopg
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
-from PIL import Image
-from reportlab.lib.pagesizes import A4, landscape
-from reportlab.lib.utils import ImageReader
-from reportlab.pdfgen import canvas
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import cm
+from reportlab.platypus import Image as PDFImage, LongTable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 app=FastAPI(docs_url=None,redoc_url=None); DSN=os.environ["DATABASE_URL"]; REPORTS=Path("/reports/healthhub/reports/semanal")
 REFRESH_REQUEST = REPORTS.parent / ".refresh-request"
@@ -88,40 +91,154 @@ def safe_pdf_path(folder, filename):
     target_dir.mkdir(parents=True, exist_ok=True)
     return target_dir / clean_name
 
-def draw_image(pdf, image_path, title):
-    width, height = landscape(A4)
-    margin = 34
-    pdf.setFont("Helvetica-Bold", 15)
-    pdf.drawString(margin, height - margin, title)
-    image = ImageReader(str(image_path))
-    source_width, source_height = image.getSize()
-    scale = min((width - 2 * margin) / source_width, (height - 92) / source_height)
-    draw_width, draw_height = source_width * scale, source_height * scale
-    pdf.drawImage(image, (width - draw_width) / 2, (height - 54 - draw_height) / 2, draw_width, draw_height)
+def safe_report_path(report_name):
+    """Solo permite exportar los informes HTML generados por el reporter."""
+    relative = PurePosixPath(report_name.strip() or "healthhub-semanal.html")
+    if relative.is_absolute() or ".." in relative.parts or relative.suffix.lower() != ".html":
+        raise HTTPException(400, "Informe no permitido.")
+    target = (REPORTS / relative).resolve()
+    if REPORTS not in target.parents or not target.is_file():
+        raise HTTPException(404, "El informe seleccionado aun no esta disponible.")
+    return target
 
-def build_pdf(output_path):
-    """Crea un PDF portable con el AGP y los catorce perfiles actuales."""
-    buffer = io.BytesIO()
-    pdf = canvas.Canvas(buffer, pagesize=landscape(A4))
-    pdf.setTitle("Health Report")
-    width, height = landscape(A4)
-    pdf.setFont("Helvetica-Bold", 24)
-    pdf.drawString(42, height - 66, "Health Report - Informe integrado")
-    pdf.setFont("Helvetica", 12)
-    pdf.drawString(42, height - 92, f"Generado {datetime.now().astimezone().strftime('%d/%m/%Y %H:%M')}")
-    pdf.drawString(42, height - 116, "Datos descriptivos; no constituyen recomendacion clinica.")
-    pdf.showPage()
-    agp = REPORTS / "agp.png"
-    if agp.is_file():
-        draw_image(pdf, agp, "AGP - ultimos 14 dias")
-        pdf.showPage()
-    for chart in sorted(REPORTS.glob("daily-*.png"), reverse=True)[:14]:
-        draw_image(pdf, chart, f"Perfil diario - {chart.stem.removeprefix('daily-')}")
-        pdf.showPage()
-    pdf.save()
-    temporary = output_path.with_suffix(".tmp")
-    temporary.write_bytes(buffer.getvalue())
-    temporary.replace(output_path)
+def pdf_text(value):
+    """Evita glifos no disponibles en las fuentes PDF basicas sin perder datos."""
+    value = re.sub(r"\s+", " ", html.unescape(value or "")).strip()
+    return unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+
+class ReportParser(HTMLParser):
+    """Extrae las secciones, tablas e imagenes del mismo HTML que ve el portal."""
+    def __init__(self):
+        super().__init__()
+        self.sections = [{"title": "", "items": []}]
+        self.tag_stack, self.capture, self.capture_tag = [], [], None
+        self.table_rows, self.row, self.cell = None, None, None
+        self.card_stack = []
+
+    @property
+    def section(self):
+        return self.sections[-1]
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        self.tag_stack.append(tag)
+        if tag == "section":
+            self.sections.append({"title": "", "items": []})
+        elif tag == "img":
+            source = urlsplit(attrs.get("src", "")).path
+            if source:
+                self.section["items"].append(("image", source))
+        elif tag == "table":
+            self.table_rows = []
+        elif tag == "tr" and self.table_rows is not None:
+            self.row = []
+        elif tag in ("td", "th") and self.row is not None:
+            self.cell = []
+        elif tag == "div" and "card" in attrs.get("class", "").split():
+            self.card_stack.append({"label": "", "value": "", "note": ""})
+        elif tag in ("h1", "h2", "h3", "p", "b", "small"):
+            self.capture, self.capture_tag = [], tag
+
+    def handle_data(self, data):
+        if self.cell is not None:
+            self.cell.append(data)
+        if self.capture_tag:
+            self.capture.append(data)
+
+    def handle_endtag(self, tag):
+        text = pdf_text("".join(self.capture)) if tag == self.capture_tag else ""
+        if tag in ("td", "th") and self.cell is not None:
+            self.row.append(pdf_text("".join(self.cell)))
+            self.cell = None
+        elif tag == "tr" and self.row is not None:
+            self.table_rows.append(self.row)
+            self.row = None
+        elif tag == "table" and self.table_rows is not None:
+            self.section["items"].append(("table", self.table_rows))
+            self.table_rows = None
+        elif tag == "div" and self.card_stack:
+            card = self.card_stack.pop()
+            if card["label"] or card["value"] or card["note"]:
+                self.section["items"].append(("card", card))
+        elif text:
+            if tag == "h2" and not self.card_stack:
+                self.section["title"] = text
+            elif tag == "h1":
+                self.section["items"].append(("title", text))
+            elif self.card_stack:
+                key = "label" if tag == "b" else "value" if tag in ("h2", "h3") else "note"
+                self.card_stack[-1][key] = " ".join(filter(None, (self.card_stack[-1][key], text)))
+            elif tag in ("h3", "p", "small", "b"):
+                self.section["items"].append(("text", text))
+        if tag == self.capture_tag:
+            self.capture, self.capture_tag = [], None
+        if self.tag_stack:
+            self.tag_stack.pop()
+
+def report_image(html_path, source, max_width):
+    image_path = (html_path.parent / source).resolve()
+    if html_path.parent not in image_path.parents or not image_path.is_file():
+        return None
+    try:
+        image = PDFImage(str(image_path))
+        ratio = min(max_width / image.imageWidth, 15 * cm / image.imageHeight)
+        image.drawWidth, image.drawHeight = image.imageWidth * ratio, image.imageHeight * ratio
+        return image
+    except Exception:
+        return None
+
+def build_pdf(output_path, report_name):
+    """Exporta el contenido completo del informe web elegido, con sus graficas."""
+    report_path = safe_report_path(report_name)
+    parser = ReportParser()
+    parser.feed(report_path.read_text(encoding="utf-8"))
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="ReportTitle", parent=styles["Title"], textColor=colors.HexColor("#17243a"), spaceAfter=12))
+    styles.add(ParagraphStyle(name="Section", parent=styles["Heading2"], textColor=colors.HexColor("#102a43"), spaceBefore=14, spaceAfter=8))
+    styles.add(ParagraphStyle(name="Body", parent=styles["BodyText"], leading=15, spaceAfter=7))
+    doc = SimpleDocTemplate(str(output_path), pagesize=A4, rightMargin=1.4*cm, leftMargin=1.4*cm, topMargin=1.3*cm, bottomMargin=1.3*cm, title="Health Report")
+    usable_width = A4[0] - doc.leftMargin - doc.rightMargin
+    story = [Paragraph("Health Report - Informe integrado", styles["ReportTitle"]), Paragraph(f"Exportado {datetime.now().astimezone().strftime('%d/%m/%Y %H:%M')}. Datos descriptivos; no constituyen recomendacion clinica.", styles["Body"])]
+    for section in parser.sections:
+        if section["title"]:
+            story.extend([Spacer(1, 4), Paragraph(html.escape(section["title"]), styles["Section"])])
+        card_buffer = []
+        def flush_cards():
+            nonlocal card_buffer
+            if not card_buffer:
+                return
+            cells = []
+            for card in card_buffer:
+                content = "<b>{}</b><br/><font size=14>{}</font>{}".format(html.escape(card["label"]), html.escape(card["value"]), f"<br/><font size=8>{html.escape(card['note'])}</font>" if card["note"] else "")
+                cells.append(Paragraph(content, styles["Body"]))
+            rows = [cells[index:index + 2] for index in range(0, len(cells), 2)]
+            if len(rows[-1]) == 1:
+                rows[-1].append("")
+            grid = Table(rows, colWidths=[usable_width / 2 - 4, usable_width / 2 - 4], hAlign="LEFT")
+            grid.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), .5, colors.HexColor("#cbd5e1")), ("INNERGRID", (0, 0), (-1, -1), .4, colors.HexColor("#e2e8f0")), ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f8fafc")), ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8), ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 7)]))
+            story.extend([grid, Spacer(1, 9)])
+            card_buffer = []
+        for kind, payload in section["items"]:
+            if kind == "card":
+                card_buffer.append(payload)
+                continue
+            flush_cards()
+            if kind == "title":
+                story.append(Paragraph(html.escape(payload), styles["ReportTitle"]))
+            elif kind == "text":
+                story.append(Paragraph(html.escape(payload), styles["Body"]))
+            elif kind == "image":
+                image = report_image(report_path, payload, usable_width)
+                if image:
+                    story.extend([image, Spacer(1, 9)])
+            elif kind == "table" and payload:
+                column_count = max(len(row) for row in payload)
+                rows = [row + [""] * (column_count - len(row)) for row in payload]
+                table = LongTable([[Paragraph(html.escape(cell), styles["Body"]) for cell in row] for row in rows], colWidths=[usable_width / column_count] * column_count, repeatRows=1)
+                table.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e2e8f0")), ("GRID", (0, 0), (-1, -1), .35, colors.HexColor("#cbd5e1")), ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 5), ("RIGHTPADDING", (0, 0), (-1, -1), 5), ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4)]))
+                story.extend([table, Spacer(1, 9)])
+        flush_cards()
+    doc.build(story)
 def event(kind, occurred_at, payload):
     record={"source":"portal","event_type":kind,"occurred_at":occurred_at,"payload":payload}
     raw=json.dumps(record,sort_keys=True,separators=(",",":")); digest=hashlib.sha256(raw.encode()).hexdigest()
@@ -164,10 +281,10 @@ def dashboard():
 <dialog id="workout"><div class="dialog-body"><h2>Registrar entrenamiento</h2><p>Se mostrara con una marca violeta en las graficas diarias.</p><form data-refresh-form method="post" action="/workout"><label>Inicio<input required type="datetime-local" name="at" value="{now}"></label><label>Duracion (minutos)<input required type="number" min="1" name="minutes" placeholder="Ej. 45"></label><label>Intensidad<select name="intensity"><option value="ligera">Ligera</option><option value="media" selected>Media</option><option value="alta">Alta</option></select></label><div class="dialog-actions"><button class="cancel" type="button" data-close>Cancelar</button><button class="submit" type="submit">Guardar y actualizar</button></div></form></div></dialog>
 <dialog id="history"><div class="dialog-body"><h2>Cargar historicos</h2><p>Selecciona una exportacion CSV de Clarity.</p><form data-refresh-form method="post" action="/clarity/upload" enctype="multipart/form-data"><label>Fichero CSV<input required type="file" accept=".csv,text/csv" name="csv_file"></label><div class="dialog-actions"><button class="cancel" type="button" data-close>Cancelar</button><button class="submit" type="submit">Cargar y actualizar</button></div></form></div></dialog>
 <dialog id="renpho"><div class="dialog-body"><h2>Cargar reporte RENPHO</h2><p>La imagen se guarda en el NAS y se lee localmente. Revisa el resultado en el informe; no se envia a servicios externos.</p><form data-refresh-form method="post" action="/renpho/upload" enctype="multipart/form-data"><label>Captura RENPHO (JPG o PNG)<input required type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" name="report_file"></label><label>Fecha y hora de la medicion<input type="datetime-local" name="captured_at" value="{now}"></label><div class="dialog-actions"><button class="cancel" type="button" data-close>Cancelar</button><button class="submit" type="submit">Leer, guardar y actualizar</button></div></form></div></dialog>
-<dialog id="pdf"><div class="dialog-body"><h2>Descargar PDF</h2><p>Tambien se guardara en el NAS, dentro de Informes PDF. El navegador iniciara la descarga.</p><form method="post" action="/pdf"><label>Carpeta en el NAS (ruta relativa)<input name="folder" value="semanal" placeholder="Ej. semana-47"></label><label>Nombre del PDF<input name="filename" value="{pdf_name}"></label><div class="dialog-actions"><button class="cancel" type="button" data-close>Cancelar</button><button class="submit" type="submit">Generar y descargar</button></div></form></div></dialog>
+<dialog id="pdf"><div class="dialog-body"><h2>Descargar PDF</h2><p>Incluye las mismas secciones, indicadores, tablas y graficas del informe seleccionado. Tambien se guardara en el NAS e iniciara la descarga.</p><form method="post" action="/pdf"><input id="pdf-report-name" type="hidden" name="report_name" value="healthhub-semanal.html"><label>Carpeta en el NAS (ruta relativa)<input name="folder" value="semanal" placeholder="Ej. semana-47"></label><label>Nombre del PDF<input name="filename" value="{pdf_name}"></label><div class="dialog-actions"><button class="cancel" type="button" data-close>Cancelar</button><button class="submit" type="submit">Generar y descargar</button></div></form></div></dialog>
 <script>
-const status=document.getElementById('refresh-status'),frame=document.getElementById('report-frame'),reportSelect=document.getElementById('report-select'),openReport=document.getElementById('open-report');
-function selectedReport(){{return '/report/'+reportSelect.value;}}function showSelectedReport(){{const url=selectedReport();frame.src=url+'?v='+Date.now();openReport.href=url;}}
+const status=document.getElementById('refresh-status'),frame=document.getElementById('report-frame'),reportSelect=document.getElementById('report-select'),openReport=document.getElementById('open-report'),pdfReportName=document.getElementById('pdf-report-name');
+function selectedReport(){{return '/report/'+reportSelect.value;}}function showSelectedReport(){{const url=selectedReport();frame.src=url+'?v='+Date.now();openReport.href=url;pdfReportName.value=reportSelect.value;}}
 reportSelect.addEventListener('change',showSelectedReport);
 document.querySelectorAll('[data-dialog]').forEach(button=>button.addEventListener('click',()=>document.getElementById(button.dataset.dialog).showModal()));
 document.querySelectorAll('[data-close]').forEach(button=>button.addEventListener('click',()=>button.closest('dialog').close()));
@@ -256,9 +373,9 @@ async def upload_renpho(report_file: UploadFile = File(...), captured_at: str = 
     return {"accepted": True, "weight": reading["weight"], "captured_at": reading["captured_at"]}
 
 @app.post("/pdf")
-def download_pdf(folder: str = Form("semanal"), filename: str = Form("health-report.pdf")):
+def download_pdf(folder: str = Form("semanal"), filename: str = Form("health-report.pdf"), report_name: str = Form("healthhub-semanal.html")):
     output_path = safe_pdf_path(folder, filename)
-    build_pdf(output_path)
+    build_pdf(output_path, report_name)
     return FileResponse(output_path, media_type="application/pdf", filename=output_path.name)
 
 @app.get("/report/{name:path}")
