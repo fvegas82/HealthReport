@@ -57,7 +57,7 @@ compartido de informes o copias, segun el montaje configurado en el homelab.
 - Repositorio: `https://github.com/fvegas82/HealthReport`
 - Rama de produccion: `master`
 - Directorio de trabajo local: `/Users/FVegas/Dev/Health Report`
-- Ultimo cambio documentado: `8c55561 fix(pdf): export full report content`
+- Ultimo cambio funcional documentado: `ea20273 fix(renpho): restore image upload dependencies`
 
 Cambios recientes relevantes:
 
@@ -65,6 +65,9 @@ Cambios recientes relevantes:
   no solo AGP y perfiles diarios. Incluye indicadores, tablas, RENPHO,
   actividad, calidad de datos y graficas. El dialogo de PDF exporta el periodo
   elegido por el selector de 14/30 dias.
+- `ea20273`: restaura `io` y Pillow (`PIL.Image`) en el portal. Son necesarios
+  para validar y abrir la imagen RENPHO antes de ejecutar el OCR local. La
+  omision se introdujo involuntariamente al preparar la exportacion PDF.
 - `1e853c1`: los pasos diarios usan el total agregado de Health Connect
   (`DailyStepsTotal`) para evitar sumar fuentes solapadas.
 - `9b36827`, `7985fb8`, `26be16c`: OCR y evolucion de RENPHO.
@@ -97,7 +100,7 @@ Por eso un `push` por si solo no cambia los contenedores en marcha.
 5. Abrir el portal y hacer una recarga forzada si el navegador conserva una
    version anterior.
 
-La version actualmente desplegada del portal tras este cierre es `8c55561`.
+La version funcional actualmente desplegada del portal es `ea20273`.
 El reporter conserva `1e853c1` porque el ultimo cambio fue exclusivo del
 portal.
 
