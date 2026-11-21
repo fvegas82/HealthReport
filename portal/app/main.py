@@ -1,4 +1,4 @@
-import hashlib, html, json, os, re, subprocess, unicodedata
+import hashlib, html, io, json, os, re, subprocess, unicodedata
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 import psycopg
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from PIL import Image
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
